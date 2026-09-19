@@ -1,0 +1,116 @@
+# Brownfield validation run 2: xstate-orchestration-demo (React/XState demo).
+project_name: xstate-orch
+project: C:\Users\redde\xstate-orchestration-demo
+mode: brownfield
+tasks:
+  - id: act-repair
+    module: test config
+    owner_files:
+      - src/test/setup.ts
+      - vite.config.ts
+    files_to_read:
+      - src/test/setup.ts
+      - vite.config.ts
+    thinking: medium
+    wave: 1
+    test_command: npx vitest run src/App.test.tsx
+    spec: |
+      The component-test layer is red: `npx vitest run src/App.test.tsx` fails 9/9 with
+      `TypeError: React.act is not a function`. Machine tests (17) are green and
+      typecheck is clean.
+
+      ROOT CAUSE (found by operator recon; verify and implement the fix):
+      this machine exports NODE_ENV=production to every child process. That leaks the
+      "production" export condition into vite/vitest module resolution, under which
+      react@19.2.8's `act` export is undefined; @testing-library/react's deprecated
+      react-dom/test-utils forwarder then throws. Verified fix lever:
+        set NODE_ENV=development && npm test   -> 26/26 passed (the same suite).
+
+      REQUIRED OUTCOME: a repo-level change so that plain `npm test` is green even with
+      the ambient NODE_ENV=production (callers must not need to export anything).
+      - Forcing the test resolution/mode to development from vite.config.ts is the
+        expected shape (the config file runs before module resolution; setting
+        process.env.NODE_ENV there, or an equivalent vitest/vite option, is acceptable).
+        Make it explicit and commented so future readers understand why.
+      - Verify twice: `npm test` (ambient production) and
+        `set NODE_ENV=development && npm test` - both must be 26/26 green.
+
+      Style/constraints:
+      - Do NOT modify anything under src/ except src/test/setup.ts (likely not needed).
+      - Do NOT install or upgrade dependencies; use only what is installed.
+      - Do not weaken or skip tests. Keep `npm run typecheck` and `npm run test:e2e`
+        green (e2e was green before your change).
+
+      Historical context (approaches already disproven, do not repeat): runtime patch of
+      the react namespace (frozen: "Cannot redefine property: act"); test.alias to a
+      shim re-exporting react/index.js (blocked by react's exports map); vi.mock('react')
+      (RTL is externalized, unmocked); @testing-library/react 16.3.3 (same failure).
+    acceptance:
+      - npm test passes 26/26 with the ambient NODE_ENV=production
+      - npx vitest run src/App.test.tsx passes (9 tests)
+      - npm run typecheck still clean; no src app/machine diffs
+  - id: history-sync
+    module: src/machines
+    owner_files:
+      - src/machines/historyMachine.ts
+      - src/machines/historyMachine.test.ts
+    files_to_read:
+      - src/machines/historyMachine.ts
+      - src/machines/historyMachine.test.ts
+      - docs/FEATURES.md
+    thinking: medium
+    wave: 1
+    test_command: npx vitest run src/machines/historyMachine.test.ts
+    spec: |
+      Implement the deferred "multi-tab sync" feature for the history machine
+      (BroadcastChannel-based), matching the project's architecture (actor owns
+      orchestration, React stays presentation).
+
+      1) historyMachine accepts an optional channel factory in its input, e.g.
+         `createChannel?: () => BroadcastChannelLike`, where BroadcastChannelLike is a
+         minimal structural type (postMessage/addEventListener or onmessage/close).
+         Default: use the real `globalThis.BroadcastChannel` when available; when it is
+         unavailable (plain Node), behave exactly as today (no-op sync).
+      2) On ADD: broadcast the added entry (include the entry payload and a `version`
+         field, e.g. 1). On receiving a valid message: merge the entry into history with
+         the SAME semantics as local adds (dedupe, most-recent-first). Do not
+         re-broadcast received entries (no loops). Ignore malformed/unknown messages.
+      3) Persistence behavior stays as-is (localStorage write-through on changes,
+         restore on start). Keep the existing public API surface otherwise compatible.
+      4) Tests: extend src/machines/historyMachine.test.ts with a fake channel double:
+         - ADD broadcasts exactly one message with the entry + version
+         - receiving a valid message merges/dedupes correctly without re-broadcast
+         - most-recent-first ordering is preserved on merge
+         - malformed messages are ignored
+         - with no channel available the machine behaves exactly as before
+         Follow the existing test style (createActor, fake timers where relevant). All
+         existing machine tests and any persistence tests must stay green.
+
+      NOTE: src/App.test.tsx may be red for the unrelated known issue under repair in a
+      parallel task - ignore those 9 failures and do NOT touch them.
+    acceptance:
+      - npx vitest run src/machines/historyMachine.test.ts passes (existing + new)
+      - no changes outside the two owned files
+  - id: history-sync-e2e
+    module: e2e
+    owner_files:
+      - e2e/history-sync.spec.ts
+    files_to_read:
+      - e2e/search.spec.ts
+      - playwright.config.ts
+      - src/components/HistoryPanel.tsx
+    thinking: medium
+    wave: 2
+    test_command: npx playwright test e2e/history-sync.spec.ts
+    spec: |
+      Add a browser-level test for the multi-tab history sync just implemented:
+      1) Open two PAGES in ONE browser context (same origin => shared BroadcastChannel).
+      2) In page A, run a search (reuse the patterns/helpers from e2e/search.spec.ts and
+         the existing selectors for the history panel).
+      3) Assert page B's history panel shows the same entry without a reload.
+      4) Reload page B and assert the entry is still there (localStorage persistence).
+      Keep the test deterministic (await visible states, no arbitrary sleeps); it must
+      leave no stray processes. Do not modify other files.
+    acceptance:
+      - npx playwright test e2e/history-sync.spec.ts passes
+      - npm run test:e2e passes (all e2e suites)

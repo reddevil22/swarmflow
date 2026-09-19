@@ -98,6 +98,13 @@ def test_digest_is_bounded(tmp_path):
     assert len(text) <= 6000 + 40
 
 
+def test_ambient_node_env_is_recorded(tmp_path, monkeypatch):
+    monkeypatch.setenv("NODE_ENV", "production")
+    info = recon(str(tmp_path))
+    assert info["env"]["NODE_ENV"] == "production"
+    assert "NODE_ENV=production" in digest(info)
+
+
 def test_ensure_gitignore_entries_is_idempotent(tmp_path):
     added = ensure_gitignore_entries(tmp_path, [".swarmflow/", "logs/"])
     assert added == [".swarmflow/", "logs/"]

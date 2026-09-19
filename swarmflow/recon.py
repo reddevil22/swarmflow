@@ -206,6 +206,7 @@ def recon(project_root, regression_command: str = "") -> dict:
         "project_root": str(root),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "git": git_state(root),
+        "env": {"NODE_ENV": os.environ.get("NODE_ENV", "")},
         "stacks": stacks,
         "commands": detect_commands(root, stacks),
         "conventions": conventions_files(root),
@@ -244,6 +245,10 @@ def digest(info: dict, limit: int = DIGEST_LIMIT) -> str:
     stacks = info.get("stacks") or []
     lines.append("- stacks: " + (", ".join(f"{s['stack']} ({s['evidence']})"
                                            for s in stacks) or "none detected"))
+    env = info.get("env") or {}
+    if env.get("NODE_ENV"):
+        lines.append(f"- ambient env: NODE_ENV={env['NODE_ENV']} (node stacks can behave "
+                     "differently under it: production conditions may hide dev-only APIs)")
     commands = info.get("commands") or {}
     for key in ("regression", "build", "lint"):
         entry = commands.get(key)
