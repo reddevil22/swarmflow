@@ -67,6 +67,14 @@ DEFAULTS = {
         "max_test_files": 20,
         "skip_patterns": [],    # fnmatch; e.g. browser-e2e specs needing a live server
     },
+    "sweep": {
+        "enabled": True,        # post-wave process sweep
+        "mode": "warn",         # warn (report) | kill (terminate this wave's new processes)
+        "kill_requires_port": True,
+        "ignore_ports": [8000],  # e.g. a local model / metrics endpoint
+        "ignore_names": [],
+        "server_names": ["node", "vite", "ts-node", "npm", "npx", "webpack", "next"],
+    },
     "git": {
         "branch_prefix": "swarmflow/",
     },

@@ -48,6 +48,26 @@ def test_run_regression_timeout(tmp_path):
     assert result["ok"] is False
 
 
+def test_run_regression_timeout_kills_the_tree(tmp_path):
+    import os
+    import time
+
+    from swarmflow import procs
+
+    body = ("import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+            "                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            "time.sleep(60)\n")
+    command = _script(tmp_path, "spawner.py", body)
+    result = run_regression(str(tmp_path), command, timeout_s=3)
+    assert result["timeout"] is True
+    time.sleep(1)
+    survivors = [pid for pid, entry in procs.snapshot().items()
+                 if "time.sleep(60)" in entry["cmdline"] and pid != os.getpid()]
+    assert survivors == []
+    assert procs.is_alive(os.getpid())
+
+
 def test_run_regression_rc5_gets_note(tmp_path):
     command = _script(tmp_path, "none.py", "raise SystemExit(5)\n")
     result = run_regression(str(tmp_path), command, timeout_s=30)

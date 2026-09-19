@@ -13,7 +13,9 @@ from .config import DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, REPO_ROOT, load_co
 from .frontier import FrontierError, build_backend
 from .ledger import Ledger
 from .plan import enqueue_plan, load_plan, scaffold, validate_plan
+from .procs import kill_tree, snapshot as process_snapshot
 from .regression import compare, run_regression
+from .sweep import find_stale, run_sweep
 from .workers import WaveAborted, WorkerRunner, scan_trace
 
 
@@ -154,6 +156,18 @@ def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
         run_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     print(f"brownfield preflight ok: branch {branch} ({action}), "
           f"base {str(state.get('head') or '')[:10]}, recon written")
+    stale = find_stale(str(project_root), process_snapshot(), config.get("sweep") or {})
+    if stale:
+        for record in stale:
+            ports = ",".join(str(port) for port in record["ports"]) or "-"
+            print(f"warning: project-attributed listener already running: pid "
+                  f"{record['pid']} {record['name']} (ports: {ports})")
+        if getattr(args, "kill_stale", False):
+            killed = [record["pid"] for record in stale if kill_tree(record["pid"])]
+            print(f"  --kill-stale terminated {len(killed)} process(es)")
+        else:
+            print("  stale listeners can serve stale code to probes; use --kill-stale "
+                  "or stop them manually")
     return 0
 
 
@@ -278,6 +292,8 @@ def cmd_wave_run(args, config) -> int:
     elif regression_enabled and not regression_command:
         print("regression gate skipped: no command detected (run `swarmflow recon` "
               "or set regression.command)")
+    sweep_before = process_snapshot() if config["sweep"].get("enabled", True) else None
+    wave_start = time.time()
     runner = _runner(config, ledger, project_root)
     try:
         results = runner.run_wave(args.wave, args.concurrency)
@@ -285,6 +301,7 @@ def cmd_wave_run(args, config) -> int:
         print(f"wave aborted: {exc}")
         ledger.close()
         return 1
+    sweep_after = process_snapshot() if sweep_before is not None else None
     report = {"wave": args.wave, "results": []}
     failures = 0
     for result in results:
@@ -294,11 +311,18 @@ def cmd_wave_run(args, config) -> int:
             failures += 1
         entry = {"task_id": result["task_id"], "outcome": result["outcome"],
                  "status": status, "turns": result["scan"]["turns"],
-                 "out_tokens": result["scan"]["out_tokens"]}
+                 "out_tokens": result["scan"]["out_tokens"],
+                 "server_launches": len(result.get("server_launches") or [])}
         report["results"].append(entry)
         if not args.json:
             print(f"  {entry['task_id']:<20} {entry['outcome']:<18} status={status} "
                   f"turns={entry['turns']} out_tokens={entry['out_tokens']}")
+            if entry["server_launches"]:
+                print(f"    note: {entry['server_launches']} server/watcher command(s) "
+                      f"observed in the trace")
+    report["sweep"] = _run_sweep(project_root, args.wave, sweep_before, sweep_after,
+                                 wave_start, config, ledger, tasks[0]["id"],
+                                 quiet=args.json)
     if regression_enabled and regression_command and not args.rebaseline:
         current = run_regression(
             project_root, regression_command, timeout_s=regression_timeout,
@@ -389,6 +413,54 @@ def _run_discrimination(project_root: str, wave: int, tasks: list, config: dict,
             if entry["verdict"] in ("passes_at_parent", "deleted_in_wave", "error_at_parent"):
                 print(f"  {entry['verdict']}: {entry['path']}")
     return state, slim
+
+
+def _run_sweep(project_root: str, wave: int, before: dict, after: dict, wave_start: float,
+               config: dict, ledger, task_id: str, quiet: bool = False) -> dict:
+    """Post-wave process sweep. Returns the result (also written to disk)."""
+    path = Path(project_root) / ".swarmflow" / "evidence" / f"wave{wave}.sweep.json"
+    try:
+        result = run_sweep(project_root, wave, before, after, wave_start, config)
+    except Exception as exc:                      # a sweep bug must never break a wave
+        result = {"version": 1, "wave": wave, "indeterminate": True,
+                  "reason": f"sweep crashed: {exc}", "counts": {}, "orphans": [],
+                  "pre_existing": [], "killed": []}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    if result.get("skipped"):
+        if not quiet:
+            print(f"process sweep skipped: {result['skipped']}")
+        return result
+    counts = result.get("counts") or {}
+    if result.get("indeterminate"):
+        if not quiet:
+            print(f"process sweep INDETERMINATE: {result.get('reason')}")
+        return result
+    ledger.record_event(task_id, "sweep", json.dumps(counts)[:500])
+    if quiet:
+        return result
+    mode = result.get("mode", "warn")
+    killed = set(result.get("killed") or [])
+    if counts.get("orphans"):
+        print(f"process sweep: {counts['orphans']} new project process(es) from this wave "
+              f"(mode={mode})")
+        for record in result.get("orphans") or []:
+            ports = ",".join(str(port) for port in record["ports"]) or "-"
+            suffix = " [killed]" if record["pid"] in killed else ""
+            print(f"  pid {record['pid']} {record['name']}: {record['cmd'][:80]} "
+                  f"(ports: {ports}){suffix}")
+        if mode != "kill":
+            print("  set sweep.mode: kill to terminate them automatically")
+    elif counts.get("pre_existing"):
+        print(f"process sweep: no new processes; {counts['pre_existing']} pre-existing "
+              f"project listener(s)")
+    else:
+        print("process sweep: clean")
+    for record in result.get("pre_existing") or []:
+        ports = ",".join(str(port) for port in record["ports"]) or "-"
+        print(f"  pre-existing listener: pid {record['pid']} {record['name']} "
+              f"(ports: {ports}) - left untouched")
+    return result
 
 
 def cmd_status(args, config) -> int:
@@ -500,6 +572,8 @@ def main(argv: list[str] | None = None) -> int:
     plan_load.add_argument("--project", default=None)
     plan_load.add_argument("--allow-dirty", action="store_true",
                            help="brownfield: allow modified tracked files")
+    plan_load.add_argument("--kill-stale", action="store_true",
+                           help="brownfield: terminate pre-existing project listeners")
     plan_load.set_defaults(func=cmd_plan_load)
 
     wave = sub.add_parser("wave-run", help="run one wave of queued tasks")

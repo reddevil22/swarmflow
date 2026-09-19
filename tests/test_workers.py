@@ -2,7 +2,8 @@
 
 import json
 
-from swarmflow.workers import classify, scan_forbidden, scan_trace
+from swarmflow.workers import (classify, scan_forbidden, scan_server_launches,
+                               scan_trace)
 
 CAP = 32768
 
@@ -97,4 +98,23 @@ def test_forbidden_actions_detected(tmp_path):
 
 def test_clean_commands_are_not_flagged(tmp_path):
     trace = _trace_with_bash(tmp_path, "npx jest src/domain/task.spec.ts")
+    assert scan_forbidden(str(trace)) == []
+
+
+def test_server_launches_are_flagged_as_evidence(tmp_path):
+    for command in ["npx vite --host", "npm run dev", "npm start",
+                    "python -m http.server 3000", "webpack serve", "nodemon src/x.ts"]:
+        trace = _trace_with_bash(tmp_path, command)
+        assert scan_server_launches(str(trace)), f"should flag: {command}"
+
+
+def test_test_runners_are_not_server_launches(tmp_path):
+    for command in ["npx vitest run src/x.test.ts", "npm test", "npx jest --ci",
+                    "python -m pytest -q", "npm run test:e2e"]:
+        trace = _trace_with_bash(tmp_path, command)
+        assert scan_server_launches(str(trace)) == [], f"should not flag: {command}"
+
+
+def test_server_launch_scan_does_not_reject_delivery(tmp_path):
+    trace = _trace_with_bash(tmp_path, "npm run dev")
     assert scan_forbidden(str(trace)) == []

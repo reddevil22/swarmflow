@@ -97,6 +97,16 @@ def test_bundle_contains_all_sections(tmp_path):
             ],
         }), encoding="utf-8")
 
+    (repo / ".swarmflow" / "evidence" / "wave1.sweep.json").write_text(json.dumps({
+        "version": 1, "wave": 1, "mode": "warn",
+        "counts": {"orphans": 1, "pre_existing": 1, "killed": 0},
+        "orphans": [{"pid": 4242, "name": "node", "cmd": "node vite.js", "cwd": "",
+                     "ports": [3000], "serverish": True}],
+        "pre_existing": [{"pid": 99, "name": "node", "cmd": "node preview.js", "cwd": "",
+                          "ports": [4173], "serverish": True}],
+        "killed": [],
+    }), encoding="utf-8")
+
     # a change on a sensitive path (test file)
     (repo / "tests" / "test_app.py").write_text("def test_ok():\n    assert 1\n",
                                                 encoding="utf-8")
@@ -114,7 +124,10 @@ def test_bundle_contains_all_sections(tmp_path):
                    "latest comparison (wave1.compare.json)",
                    "new failing test: tests/test_app.py::test_x",
                    "## Discrimination", "fails_at_parent: tests/test_app.py",
-                   "passes_at_parent: tests/test_other.py"]:
+                   "passes_at_parent: tests/test_other.py",
+                   "## Processes (post-wave sweep)",
+                   "leaked: pid 4242 node (ports: 3000)",
+                   "pre-existing listener (untouched): pid 99"]:
         assert marker in text, f"missing: {marker}"
 
     ledger = Ledger(str(tmp_path / "ledger.db"))

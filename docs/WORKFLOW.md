@@ -68,16 +68,23 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    the run branch `swarmflow/<name>` is created or reused; `run.json` records
    mode/branch/base_sha (first write wins).
 4. **Waves**: before each wave, freeze only that wave's owner map (per-wave ownership).
-   After each wave: the project regression suite runs and is compared against the
-   baseline in `run.json` by failure identity - fingerprinted failing tests plus an
-   executed-test inventory, so a different test breaking at equal counts and a suite
-   shrinking while staying green both fail the wave. Uncomparable results fail closed
-   (`regression.strict`), the comparison is written to `evidence/wave<N>.compare.json`,
-   and `--rebaseline` re-records the baseline when the current state is known-good.
-   Then the discrimination check re-runs the wave's owned test files at `base_sha` in a
-   throwaway git worktree (verdicts to `evidence/wave<N>.discrimination.json`; warn by
-   default, `enforce` fails the wave). Then the git-based scope audit runs. Untouched
-   deliveries are rejected (`no_changes`).
+   After each wave: the process sweep diffs process snapshots taken before/after the
+   wave, attributes new processes to the project (command line or working directory),
+   attaches listening ports and reports them (`evidence/wave<N>.sweep.json`;
+   `sweep.mode: kill` terminates this wave's new processes, pre-existing listeners are
+   only reported). The sweep runs **before** the regression suite so a leaked server
+   cannot serve stale code to the gate. Then the project regression suite runs and is
+   compared against the baseline in `run.json` by failure identity - fingerprinted
+   failing tests plus an executed-test inventory, so a different test breaking at equal
+   counts and a suite shrinking while staying green both fail the wave. Uncomparable
+   results fail closed (`regression.strict`), the comparison is written to
+   `evidence/wave<N>.compare.json`, and `--rebaseline` re-records the baseline when the
+   current state is known-good. Then the discrimination check re-runs the wave's owned
+   test files at `base_sha` in a throwaway git worktree (verdicts to
+   `evidence/wave<N>.discrimination.json`; warn by default, `enforce` fails the wave).
+   Then the git-based scope audit runs. Untouched deliveries are rejected (`no_changes`).
+   Preflight additionally warns about project-attributed listeners that were already
+   running before the run (`plan-load --kill-stale` removes them).
 5. **Verify/accept**: `swarmflow evidence --project P` assembles the bundle (recon
    digest, ledger, worker reports from traces, audit, regression, bounded diff of
    tests + manifests) for the verifier/acceptance passes.

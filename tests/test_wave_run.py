@@ -3,11 +3,12 @@
 import json
 import subprocess
 import sys
+import time
 
 import pytest
 import yaml
 
-from swarmflow import cli
+from swarmflow import cli, procs
 from swarmflow.ledger import Ledger
 
 
@@ -244,6 +245,167 @@ def test_brownfield_wave_run_reports_discrimination(tmp_path, monkeypatch):
     assert cli.main(["--config", str(enforce_config), "plan-load",
                      "--plan", str(plan_path2)]) == 0
     assert cli.main(["--config", str(enforce_config), "wave-run", "--wave", "1"]) == 1
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_plan_load_warns_about_stale_listener_and_can_kill_it(tmp_path, capsys):
+    import socket
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo,
+                   capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=repo,
+                   capture_output=True, check=True)
+    (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repo,
+                   capture_output=True, check=True)
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    starter = ("import subprocess, sys\n"
+               f"subprocess.Popen([sys.executable, '-m', 'http.server', '{port}', "
+               "'--bind', '127.0.0.1'], "
+               f"cwd=r'{repo}', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n")
+    subprocess.run([sys.executable, "-c", starter], check=True)
+    server_pid = None
+    for _ in range(25):
+        time.sleep(0.2)
+        for pid, entry in procs.snapshot().items():
+            if "http.server" in entry["cmdline"] and str(port) in entry["cmdline"] \
+                    and entry["name"].lower().startswith("python"):
+                server_pid = pid
+                break
+        if server_pid:
+            break
+    assert server_pid, "stale listener was not started"
+    config = _config(tmp_path)
+    try:
+        plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
+                "tasks": [{"id": "T1", "module": "app.py", "owner_files": ["app.py"],
+                           "spec": "do", "wave": 1}]}
+        plan_path = tmp_path / "plan.yaml"
+        plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
+        assert cli.main(["--config", str(config), "plan-load",
+                         "--plan", str(plan_path)]) == 0
+        output = capsys.readouterr().out
+        assert "project-attributed listener already running" in output
+        assert procs.is_alive(server_pid)
+
+        plan2 = dict(plan, tasks=[dict(plan["tasks"][0], id="T2")])
+        plan_path2 = tmp_path / "plan2.yaml"
+        plan_path2.write_text(yaml.safe_dump(plan2), encoding="utf-8")
+        assert cli.main(["--config", str(config), "plan-load", "--kill-stale",
+                         "--plan", str(plan_path2)]) == 0
+        assert "--kill-stale terminated" in capsys.readouterr().out
+        time.sleep(1)
+        assert not procs.is_alive(server_pid)
+    finally:
+        if server_pid and procs.is_alive(server_pid):
+            procs.kill_tree(server_pid, server_pid)
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_brownfield_wave_run_sweeps_leaked_processes(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def run(*args):
+        subprocess.run(["git", *args], cwd=repo, capture_output=True, check=True)
+
+    run("init", "-q")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "T")
+    (repo / "app.py").write_text("def value():\n    return 1\n", encoding="utf-8")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_app.py").write_text("def test_value():\n    assert True\n",
+                                                encoding="utf-8")
+    script = repo / "serve.py"
+    script.write_text("import time\n\ntime.sleep(60)\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-qm", "baseline")
+
+    command = f'"{sys.executable}" -m pytest -q tests'
+    task = {"id": "T1", "module": "app.py",
+            "owner_files": ["app.py", "tests/test_app.py"],
+            "spec": "do", "wave": 1, "test_command": command}
+    plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
+            "tasks": [task]}
+    plan_path = tmp_path / "plan.yaml"
+    plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
+    config = _config(tmp_path)
+
+    leaked = []
+
+    def leak():
+        starter = ("import subprocess, sys\n"
+                   f"subprocess.Popen([sys.executable, r'{script}'], "
+                   "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n")
+        subprocess.run([sys.executable, "-c", starter], check=True, cwd=repo)
+        for _ in range(25):
+            time.sleep(0.2)
+            hit = [pid for pid, entry in procs.snapshot().items()
+                   if str(script) in entry["cmdline"] and pid not in leaked]
+            if hit:
+                leaked.append(hit[0])
+                return
+
+    class LeakyRunner:
+        def __init__(self, ledger):
+            self.ledger = ledger
+
+        def run_wave(self, wave, concurrency=None):
+            results = []
+            for task_row in self.ledger.list_tasks(status="queued", wave=wave):
+                self.ledger.set_status(task_row["id"], "delivered")
+                results.append({"task_id": task_row["id"], "outcome": "delivered",
+                                "missing": [], "scan": {"turns": 1, "out_tokens": 10},
+                                "server_launches": []})
+            leak()
+            return results
+
+    monkeypatch.setattr(cli, "_runner",
+                        lambda config, ledger, root: LeakyRunner(ledger))
+    try:
+        assert cli.main(["--config", str(config), "plan-load",
+                         "--plan", str(plan_path)]) == 0
+        # wave 1 (warn): the leak is reported and left alive
+        assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+        data = json.loads((repo / ".swarmflow" / "evidence"
+                           / "wave1.sweep.json").read_text(encoding="utf-8"))
+        assert data["counts"]["orphans"] >= 1
+        assert data["killed"] == []
+        assert procs.is_alive(leaked[0])
+        ledger = Ledger(str(tmp_path / "ledger.db"))
+        kinds = [event["kind"] for event in ledger.events("T1", limit=20)]
+        ledger.close()
+        assert "sweep" in kinds
+
+        # wave 2 (kill, port requirement off for the python sleeper): the new leak dies,
+        # the first one is pre-existing and stays untouched
+        kill_config = tmp_path / "cfg_kill.yaml"
+        kill_config.write_text(yaml.safe_dump({
+            "paths": {"ledger": str(tmp_path / "ledger.db")},
+            "sweep": {"mode": "kill", "kill_requires_port": False}}), encoding="utf-8")
+        plan2 = dict(plan, tasks=[dict(task, id="T2")])
+        plan_path2 = tmp_path / "plan2.yaml"
+        plan_path2.write_text(yaml.safe_dump(plan2), encoding="utf-8")
+        assert cli.main(["--config", str(kill_config), "plan-load",
+                         "--plan", str(plan_path2)]) == 0
+        assert cli.main(["--config", str(kill_config), "wave-run", "--wave", "1"]) == 0
+        data = json.loads((repo / ".swarmflow" / "evidence"
+                           / "wave1.sweep.json").read_text(encoding="utf-8"))
+        assert data["counts"]["killed"] >= 1
+        assert not procs.is_alive(leaked[1])
+        assert procs.is_alive(leaked[0])
+    finally:
+        for pid in leaked:
+            if procs.is_alive(pid):
+                procs.kill_tree(pid, pid)
 
 
 @pytest.mark.skipif(not GIT, reason="git not available")

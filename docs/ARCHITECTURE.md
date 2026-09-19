@@ -46,6 +46,7 @@ Measured behavior this design relies on (stress test, 2026-09-19):
 | tests pass but do not discriminate (accommodating tests) | discrimination check: the wave's owned test files re-run at the run's base commit in a throwaway git worktree | verdicts in the ledger + evidence bundle; `discrimination.mode: enforce` fails the wave |
 | suite weakened or deleted while staying green | executed-test inventory (skips/ignores excluded) compared against the baseline | wave marked failed (`suite shrank 13 -> 5`) |
 | uncomparable suite results (unknown runner, legacy baseline) | both runs red with no fingerprints on either side | fail closed under `regression.strict` (default); warning otherwise |
+| leaked dev server / watcher poisons later probes | tree-safe termination at worker exit + a post-wave process sweep (snapshot diff, cmdline/cwd attribution, listening ports) run before the regression gate | orphans reported in the ledger + evidence; `sweep.mode: kill` terminates this wave's new processes (pre-existing listeners are reported, never killed) |
 | modify task delivered without touching its owned files | dispatch-time sha256 snapshots of owned files | outcome `no_changes`, wave fails |
 | scope creep | ownership map diff audit (roadmap) | reject delivery |
 | engine saturation | `/metrics`: waiting > 0 or KV > threshold | hold dispatches (admission control) |
@@ -101,7 +102,7 @@ configured.
 
 ```
 swarmflow/            control plane package (config, ledger, frontier, workers, plan,
-                      audit, regression, discrimination, evidence, cli)
+                      audit, regression, discrimination, procs, sweep, evidence, cli)
 config/               swarmflow.yaml (models, concurrency, timeouts, paths)
 prompts/              planner, task brief, verifier, acceptance templates
 AGENTS.worker.md      canonical worker rules (copied into scaffolded projects)

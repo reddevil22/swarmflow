@@ -171,6 +171,37 @@ def bundle(project_root: str, ledger) -> str:
                 lines.append(f"  - {entry['verdict']}: {entry['path']}{detail}")
     lines.append("")
 
+    lines.append("## Processes (post-wave sweep)")
+    sweep_files = sorted(evidence_dir.glob("wave*.sweep.json"),
+                         key=lambda item: item.stat().st_mtime)
+    if not sweep_files:
+        lines.append("- (none recorded)")
+    else:
+        latest = sweep_files[-1]
+        try:
+            sweep_check = json.loads(latest.read_text(encoding="utf-8"))
+        except ValueError:
+            sweep_check = {}
+        if sweep_check.get("skipped"):
+            lines.append(f"- skipped: {sweep_check['skipped']}")
+        elif sweep_check.get("indeterminate"):
+            lines.append(f"- indeterminate: {sweep_check.get('reason')}")
+        else:
+            counts = sweep_check.get("counts") or {}
+            lines.append(f"- {latest.name}: orphans={counts.get('orphans', 0)} "
+                         f"pre_existing={counts.get('pre_existing', 0)} "
+                         f"killed={counts.get('killed', 0)} "
+                         f"mode={sweep_check.get('mode', 'warn')}")
+            for record in sweep_check.get("orphans") or []:
+                ports = ", ".join(str(port) for port in record["ports"]) or "-"
+                lines.append(f"  - leaked: pid {record['pid']} {record['name']} "
+                             f"(ports: {ports}) `{record['cmd'][:120]}`")
+            for record in sweep_check.get("pre_existing") or []:
+                ports = ", ".join(str(port) for port in record["ports"]) or "-"
+                lines.append(f"  - pre-existing listener (untouched): pid {record['pid']} "
+                             f"{record['name']} (ports: {ports})")
+    lines.append("")
+
     lines.append("## Git diff vs base")
     base = state.get("base_sha", "")
     if base:

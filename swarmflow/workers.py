@@ -5,6 +5,8 @@ codes: the stress test showed rc=0 alongside a completely empty deliverable.
 """
 
 import json
+import os
+import re
 import subprocess
 import time
 import urllib.request
@@ -12,6 +14,7 @@ from pathlib import Path
 
 from .audit import _hash_file
 from .config import build_cli_command, resolve_executable
+from .procs import kill_tree, spawn_flags
 from .recon import load_recon
 
 
@@ -133,6 +136,8 @@ STACK_RULES = {
 STACK_RULES_COMMON = [
     "- NEVER modify files you do not own, including tool and dependency configs.",
     "- Do not create scratch/temporary files; delete anything you create by accident.",
+    "- Never start long-running servers or watchers (dev servers, preview servers, "
+    "--watch). A test server must come from the injected verification command.",
     "- If the SAME failure persists after 3 fix attempts, stop immediately and report a "
     "BLOCKED section with the exact command, the exact output, and what you tried.",
     "- Stay under ~40 tool calls. Reading your own code beats shell experimentation.",
@@ -171,12 +176,11 @@ FORBIDDEN_ACTIONS = [
 ]
 
 
-def scan_forbidden(trace_path: str) -> list[str]:
-    """Return worker bash commands that violate the dependency envelope."""
-    hits = []
+def _iter_bash_commands(trace_path: str):
+    """Yield the bash commands a session issued (assistant tool calls only)."""
     trace = Path(trace_path)
     if not trace.exists():
-        return hits
+        return
     for line in trace.open(encoding="utf-8", errors="replace"):
         line = line.strip()
         if not line:
@@ -191,19 +195,43 @@ def scan_forbidden(trace_path: str) -> list[str]:
         if message.get("role") != "assistant":
             continue
         for item in message.get("content") or []:
-            if isinstance(item, dict) and item.get("name") == "bash":
-                args = item.get("arguments")
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except ValueError:
-                        args = {}
-                cmd = str((args or {}).get("command", ""))
-                lowered = cmd.lower()
-                for pattern in FORBIDDEN_ACTIONS:
-                    if pattern in lowered:
-                        hits.append(cmd[:200])
-                        break
+            if not isinstance(item, dict) or item.get("name") != "bash":
+                continue
+            args = item.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {}
+            command = str((args or {}).get("command", ""))
+            if command:
+                yield command
+
+
+SERVER_LAUNCH_RE = re.compile(
+    r"(npm run dev|npm start|yarn dev|pnpm dev|next dev|webpack serve|nodemon|ts-node|"
+    r"uvicorn|flask run|gunicorn|python -m http\.server|\bvite(?!st)\b|--watch)")
+
+
+def scan_server_launches(trace_path: str) -> list:
+    """Bash commands that start long-running servers/watchers. Evidence, not a failure:
+    the sweep (and the operator) need to know what was left behind."""
+    launches = []
+    for command in _iter_bash_commands(trace_path):
+        if SERVER_LAUNCH_RE.search(command.lower()):
+            launches.append(command[:200])
+    return launches
+
+
+def scan_forbidden(trace_path: str) -> list[str]:
+    """Return worker bash commands that violate the dependency envelope."""
+    hits = []
+    for command in _iter_bash_commands(trace_path):
+        lowered = command.lower()
+        for pattern in FORBIDDEN_ACTIONS:
+            if pattern in lowered:
+                hits.append(command[:200])
+                break
     return hits
 
 
@@ -233,8 +261,14 @@ class WorkerRunner:
         out = trace_path.open("wb")
         proc = subprocess.Popen(
             cmd, cwd=str(self.project_root), stdin=subprocess.PIPE,
-            stdout=out, stderr=subprocess.STDOUT,
+            stdout=out, stderr=subprocess.STDOUT, **spawn_flags(),
         )
+        pgid = None
+        if os.name != "nt":
+            try:
+                pgid = os.getpgid(proc.pid)
+            except OSError:
+                pgid = None
         before = {}
         for rel in task.get("owner_files", []):
             path = self.project_root / rel
@@ -243,7 +277,7 @@ class WorkerRunner:
             except OSError:
                 before[rel] = None
         return {"proc": proc, "out": out, "trace": str(trace_path), "task": task,
-                "thinking": thinking, "before": before}
+                "thinking": thinking, "before": before, "pgid": pgid}
 
     def _finalize(self, handle: dict, timeout_s: float) -> dict:
         proc, out, task = handle["proc"], handle["out"], handle["task"]
@@ -254,17 +288,25 @@ class WorkerRunner:
         while proc.poll() is None:
             if time.time() > deadline:
                 killed_for = "timeout"
-                proc.kill()
+                kill_tree(proc.pid, handle.get("pgid"))
                 break
             time.sleep(15)
             if scan_trace(handle["trace"], cap)["turns"] > turn_cap:
                 killed_for = "turn_cap"
-                proc.kill()
+                kill_tree(proc.pid, handle.get("pgid"))
                 break
         proc.wait()
+        # a session that exits cleanly can still leave a server/watcher behind; on
+        # Windows the parent link is gone by now, so the sweep covers that case instead
+        # of taskkill-ing a pid that could have been reused
+        if os.name != "nt":
+            kill_tree(proc.pid, handle.get("pgid"))
+        if proc.poll() is None:
+            proc.kill()
         out.close()
         scan = scan_trace(handle["trace"], cap)
         forbidden = scan_forbidden(handle["trace"])
+        launches = scan_server_launches(handle["trace"])
         missing = [f for f in task.get("owner_files", [])
                    if not (self.project_root / f).exists()]
         if killed_for == "turn_cap":
@@ -283,9 +325,11 @@ class WorkerRunner:
             artifacts=[f for f in task.get("owner_files", []) if (self.project_root / f).exists()],
             verdict=json.dumps({"outcome": outcome, "missing": missing,
                                 "turns": scan["turns"], "out_tokens": scan["out_tokens"],
-                                "killed_for": killed_for, "forbidden": forbidden[:3]}),
+                                "killed_for": killed_for, "forbidden": forbidden[:3],
+                                "server_launches": launches[:3]}),
         )
-        return {"task_id": task["id"], "outcome": outcome, "missing": missing, "scan": scan}
+        return {"task_id": task["id"], "outcome": outcome, "missing": missing,
+                "scan": scan, "server_launches": launches}
 
     def _send_prompt(self, handle: dict, prompt: str) -> None:
         handle["proc"].stdin.write(prompt.encode("utf-8"))
@@ -384,19 +428,30 @@ class WorkerRunner:
             raise WaveAborted("node_modules missing; install dependencies first")
         self._wait_ready()
         results = []
-        for start in range(0, len(tasks), concurrency):
-            chunk = tasks[start:start + concurrency]
-            handles = []
-            for task in chunk:
-                attempt = self.ledger.bump_attempts(task["id"])
-                self.ledger.set_status(task["id"], "running")
-                prompt = self.build_prompt(task)
-                handle = self._spawn(task, task["thinking"], attempt)
-                self._send_prompt(handle, prompt)
-                handles.append(handle)
-                time.sleep(self.config["swarm"]["stagger_s"])
-            for handle in handles:
-                results.append(self._finalize(handle, self.config["worker"]["timeout_s"]))
+        live = []
+        try:
+            for start in range(0, len(tasks), concurrency):
+                chunk = tasks[start:start + concurrency]
+                handles = []
+                for task in chunk:
+                    attempt = self.ledger.bump_attempts(task["id"])
+                    self.ledger.set_status(task["id"], "running")
+                    prompt = self.build_prompt(task)
+                    handle = self._spawn(task, task["thinking"], attempt)
+                    self._send_prompt(handle, prompt)
+                    handles.append(handle)
+                    live.append(handle)
+                    time.sleep(self.config["swarm"]["stagger_s"])
+                for handle in handles:
+                    results.append(self._finalize(handle,
+                                                  self.config["worker"]["timeout_s"]))
+                    if handle in live:
+                        live.remove(handle)
+        finally:
+            # workers run in their own session; on interrupt nothing else reaches them
+            for handle in live:
+                if handle["proc"].poll() is None:
+                    kill_tree(handle["proc"].pid, handle.get("pgid"))
         # spiral retry pass (proven recovery: lower thinking + concise directive)
         retry_ctx = ("\n\nRETRY CONTEXT: your previous attempt exhausted the output budget "
                      "while planning. Do not restate the spec; decide quickly, write the "

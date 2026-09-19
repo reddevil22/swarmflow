@@ -86,5 +86,16 @@ discrimination:
   max_test_files: 20      # cap on files checked per wave
   skip_patterns: []       # fnmatch; add browser-e2e globs when they need a live server
 
+sweep:
+  # After each wave, processes born during the wave that are attributable to the
+  # project (command line or working directory) are reported as evidence; leaked
+  # servers otherwise keep ports and poison later probes with stale code.
+  enabled: true
+  mode: warn              # warn (report) | kill (terminate this wave's new processes)
+  kill_requires_port: true  # kill only port-holding or allowlisted server processes
+  ignore_ports: [8000]    # e.g. a local model / metrics endpoint
+  ignore_names: []        # extra process names to never report or kill
+  server_names: ["node", "vite", "ts-node", "npm", "npx", "webpack", "next"]
+
 git:
   branch_prefix: "swarmflow/"   # brownfield run branches are <prefix><project_name>

@@ -75,14 +75,20 @@ What the run caught (pipeline fixes applied):
    preflight preserves explicit overrides.
 2. **Orphaned servers**: workers left a `ts-node src/main.ts` listener on port 3000
    twice; external probes then measured stale code and reported false failures.
-   Cleanup was manual. Roadmap: post-wave listener sweep / worker bash hygiene.
+   Cleanup was manual. **Delivered:** tree-safe termination (workers run in their own
+   session; every kill path tears down the tree, including after a clean exit) plus a
+   post-wave process sweep that diffs before/after snapshots, attributes processes to
+   the project by command line or working directory, reports ports in the ledger and
+   evidence, and can terminate them (`sweep.mode: kill`); a server-launch scanner in
+   worker traces plus a worker rule against starting servers/watchers.
 3. **Verifier narrative confusion**: worker reports describing intermediate failures
    caused two `needs_fix` rounds partly about bookkeeping. Fixed in the bundle: a
    narrative disclaimer plus per-task spec embedding so spec-vs-delivery checks work.
 
 Roadmap from this run: unit-level `@Query('done')` test; generated e2e tests should
 avoid presence-only assertions; assert error message text where the contract includes
-it; post-wave orphan-process sweep.
+it; post-wave orphan-process sweep (delivered: tree-safe termination plus the
+snapshot-diff sweep).
 
 ## Brownfield validation run 2 (2026-09-19, `xstate-orchestration-demo`)
 
@@ -140,7 +146,8 @@ process only, so the production build path is unchanged.
 6. **Stale preview server**: Playwright's `reuseExistingServer: true` kept an old
    `vite preview` alive on :4173, so several test runs (including a worker's) silently
    exercised a stale bundle and produced wrong conclusions. Verification now includes a
-   listener check; ties directly into the post-wave process sweep roadmap.
+   listener check; delivered as the post-wave process sweep, plus a start-of-run warning
+   about pre-existing project listeners (`plan-load --kill-stale` removes them).
 7. **Frozen-config vs repair tasks**: the legitimate repair of `vite.config.ts` fails
    the freeze audit (`modified_frozen`), because the policy has no sanctioned exception
    path. Roadmap: per-task freeze allow-lists recorded in `run.json`.

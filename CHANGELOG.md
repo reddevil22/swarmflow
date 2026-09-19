@@ -25,6 +25,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     for brownfield; broader forbidden-action scan (pip/poetry/uv/go get/cargo add).
   - `swarmflow evidence` bundle (recon, ledger, reports from traces, audit,
     regression, bounded diff of tests + manifests) for verifier/acceptance passes.
+- **Process sweep + tree-safe termination**:
+  - workers are spawned in their own session (POSIX) and every kill path terminates the
+    whole tree (`killpg` / `taskkill /T`); a worker that exits cleanly still gets its
+    group cleaned, a Ctrl-C tears down live sessions, and a hung regression suite is
+    tree-killed instead of leaving the runner alive.
+  - after each wave (and before the regression gate) process snapshots taken before/after
+    are diffed: new processes attributable to the project by command line or working
+    directory are reported with their listening ports in the ledger, a per-wave JSON and
+    a new evidence section. `sweep.mode: kill` terminates them (port-holding or
+    allowlisted server processes only); pre-existing listeners are reported, never
+    killed. Plan-load warns about stale project listeners and `--kill-stale` removes
+    them.
+  - worker traces are scanned for server/watcher launches (evidence in the task verdict,
+    not a failure) and the worker rules forbid starting them.
 - **Discrimination check** (brownfield, per wave): the wave's owned test files are
   re-run at the run's `base_sha` in a throwaway git worktree - parent sources plus the
   new tests, dependencies linked in. Each file gets a verdict (`fails_at_parent`,

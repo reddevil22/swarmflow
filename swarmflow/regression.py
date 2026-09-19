@@ -15,6 +15,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from .procs import kill_tree, spawn_flags
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
 MAX_FINGERPRINT = 200
 
@@ -277,42 +279,53 @@ def parse_report(output: str) -> dict:
 
 def run_regression(project_root: str, command: str, timeout_s: float = 900,
                    evidence_path: str | None = None) -> dict:
-    """Run the suite via the shell (user-visible commands, .cmd shims), capture output."""
+    """Run the suite via the shell (user-visible commands, .cmd shims), capture output.
+
+    On timeout the whole process tree is killed, not just the shell: a hung watch-mode
+    suite otherwise keeps running (and keeps holding ports) after the gate gives up.
+    """
     started = time.time()
     result = {"command": command, "rc": None, "failures": None, "timeout": False,
               "duration_s": None, "ok": False, "output": ""}
     try:
-        proc = subprocess.run(command, shell=True, cwd=str(project_root),
-                              capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=timeout_s)
-        full = (proc.stdout or "")
-        if proc.stderr:
-            full += ("\n" if full else "") + proc.stderr
-        report = parse_report(full)
-        result["rc"] = proc.returncode
-        result["failures"] = report["failures"]
-        result["family"] = report["family"]
-        result["fingerprints"] = report["fingerprints"]
-        result["errors"] = report["errors"]
-        result["tests_ran"] = report["tests_ran"]
-        result["skipped"] = report["skipped"]
-        result["unit"] = report["unit"]
-        result["ok"] = proc.returncode == 0
-        if proc.returncode == 5 and result["failures"] is None:
-            result["note"] = "no tests collected (pytest rc=5) - check the command"
-        result["output"] = full[-20000:]
-    except subprocess.TimeoutExpired as exc:
-        partial = exc.stdout if isinstance(exc.stdout, str) else ""
-        report = parse_report(partial)
-        result["timeout"] = True
-        result["family"] = report["family"]
-        result["fingerprints"] = report["fingerprints"]
-        result["errors"] = report["errors"]
-        result["tests_ran"] = report["tests_ran"]
-        result["skipped"] = report["skipped"]
-        result["unit"] = report["unit"]
-        result["output"] = partial[-20000:]
-        result["note"] = f"timed out after {timeout_s}s"
+        proc = subprocess.Popen(command, shell=True, cwd=str(project_root),
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace",
+                                **spawn_flags())
+        try:
+            full, _ = proc.communicate(timeout=timeout_s)
+            full = full or ""
+            report = parse_report(full)
+            result["rc"] = proc.returncode
+            result["failures"] = report["failures"]
+            result["family"] = report["family"]
+            result["fingerprints"] = report["fingerprints"]
+            result["errors"] = report["errors"]
+            result["tests_ran"] = report["tests_ran"]
+            result["skipped"] = report["skipped"]
+            result["unit"] = report["unit"]
+            result["ok"] = proc.returncode == 0
+            if proc.returncode == 5 and result["failures"] is None:
+                result["note"] = "no tests collected (pytest rc=5) - check the command"
+            result["output"] = full[-20000:]
+        except subprocess.TimeoutExpired:
+            result["timeout"] = True
+            kill_tree(proc.pid)
+            try:
+                partial, _ = proc.communicate(timeout=30)
+            except (subprocess.TimeoutExpired, ValueError, OSError):
+                proc.kill()
+                partial = ""
+            partial = partial or ""
+            report = parse_report(partial)
+            result["family"] = report["family"]
+            result["fingerprints"] = report["fingerprints"]
+            result["errors"] = report["errors"]
+            result["tests_ran"] = report["tests_ran"]
+            result["skipped"] = report["skipped"]
+            result["unit"] = report["unit"]
+            result["output"] = partial[-20000:]
+            result["note"] = f"timed out after {timeout_s}s"
     except OSError as exc:
         result["note"] = f"could not launch: {exc}"
     result["duration_s"] = round(time.time() - started, 1)
