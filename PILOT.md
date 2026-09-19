@@ -57,8 +57,11 @@ Incidents (all found by this run; fixes applied):
 Metrics: wave 1 = 2m19s (post-fix), wave 2 = 1m42s; T1-T4 attempts=4 each (3 lost to the
 environment/thrash era), T5 attempts=1; verifier call 25.8K in / 7.6K out tokens.
 
-Roadmap from this run:
-- frozen-file integrity gate (baseline hashes verified after every wave)
-- file-level scope audit (diff actual changes vs owner map)
-- inject the exact test command per task (no discovery by workers)
-- wire PR creation (gh) once a remote is configured
+Roadmap from this run (status):
+- [done] frozen-file integrity gate: `swarmflow freeze --project P` snapshots every
+  non-owned file; `wave-run` auto-audits after each wave; `swarmflow audit` on demand
+- [done] scope audit: detects modified_frozen / deleted_frozen / added_unowned
+  (owned paths exempt); verified live against TaskDock (caught simulated violations)
+- [done] exact test_command per task: planner emits it, ledger stores it, worker brief
+  injects it verbatim so workers never discover test setups
+- [descoped] PR creation wiring: no PR flow for now (decision)

@@ -21,9 +21,10 @@ MUST KEEP WORKING (do not break these; run them if provided):
 ## ENVIRONMENT RULES (violations cause rejection)
 
 - This project uses ONLY npm and npx. Never use pnpm, yarn, or bun.
-- Run your tests with: `npx jest <your-test-file>` from the project root.
-  Jest cold start takes ~20s: run it once per fix cycle, never in a loop,
-  and never run other workers' test files.
+- Run EXACTLY this verification command, from the project root:
+  `{test_command}`
+  Run it once per fix cycle, never in a loop, and never run other workers' tests.
+  Do not explore the repository for test setups or alternative commands.
 - NEVER read, grep, list, or explore node_modules. It is not your business.
 - NEVER modify package.json, package-lock.json, tsconfig.json, jest.config.js,
   jest-e2e.json, or any file you do not own. Do not run npm/pnpm/yarn install;

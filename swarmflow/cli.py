@@ -6,6 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .audit import audit, freeze
 from .config import REPO_ROOT, load_config
 from .frontier import FrontierClient, FrontierError
 from .ledger import Ledger
@@ -101,8 +102,9 @@ def cmd_wave_run(args, config) -> int:
         print(f"  {result['task_id']:<20} {result['outcome']:<18} status={status} "
               f"turns={result['scan']['turns']} out_tokens={result['scan']['out_tokens']}")
     print("ledger:", ledger.counts())
+    audit_state = _run_audit(project_root, ledger, tasks[0]["id"])
     ledger.close()
-    return 0 if failures == 0 else 1
+    return 0 if failures == 0 and audit_state != "fail" else 1
 
 
 def cmd_status(args, config) -> int:
@@ -113,6 +115,55 @@ def cmd_status(args, config) -> int:
               f"attempts={task['attempts']} module={task['module']}")
     ledger.close()
     return 0
+
+
+def _run_audit(project_root: str, ledger, task_id: str) -> str:
+    """Run the scope audit after a wave. Returns 'ok', 'skipped', or 'fail'."""
+    result = audit(project_root)
+    kinds = {violation["kind"] for violation in result["violations"]}
+    if kinds == {"no_baseline"}:
+        print("SCOPE AUDIT skipped (no frozen baseline; run `freeze --project ...` first)")
+        return "skipped"
+    if result["ok"]:
+        print("SCOPE AUDIT OK")
+        return "ok"
+    print(f"SCOPE AUDIT FAIL: {len(result['violations'])} violation(s)")
+    for violation in result["violations"]:
+        print(f"  {violation['kind']}: {violation['path']}")
+    ledger.record_event(task_id, "scope-violation",
+                        json.dumps(result["violations"])[:500])
+    return "fail"
+
+
+def cmd_freeze(args, config) -> int:
+    ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
+    project_root = str(Path(args.project).resolve())
+    tasks = [task for task in ledger.list_tasks() if task["project"] == project_root]
+    ledger.close()
+    if not tasks:
+        print(f"no tasks registered for {project_root}")
+        return 2
+    owners = {task["id"]: task["owner_files"] for task in tasks}
+    info = freeze(project_root, owners)
+    print(f"frozen {info['frozen_files']} files ({info['owned']} owned paths) "
+          f"-> {info['baseline']}")
+    return 0
+
+
+def cmd_audit(args, config) -> int:
+    project_root = str(Path(args.project).resolve())
+    result = audit(project_root)
+    kinds = {violation["kind"] for violation in result["violations"]}
+    if result["ok"]:
+        print("AUDIT OK: no violations")
+        return 0
+    if kinds == {"no_baseline"}:
+        print("no frozen baseline; run freeze first")
+        return 2
+    print(f"AUDIT FAIL: {len(result['violations'])} violation(s)")
+    for violation in result["violations"]:
+        print(f"  {violation['kind']}: {violation['path']}")
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -142,6 +193,14 @@ def main(argv: list[str] | None = None) -> int:
 
     status = sub.add_parser("status", help="show ledger state")
     status.set_defaults(func=cmd_status)
+
+    freeze_p = sub.add_parser("freeze", help="snapshot the frozen baseline for a project")
+    freeze_p.add_argument("--project", required=True)
+    freeze_p.set_defaults(func=cmd_freeze)
+
+    audit_p = sub.add_parser("audit", help="check a project against the frozen baseline")
+    audit_p.add_argument("--project", required=True)
+    audit_p.set_defaults(func=cmd_audit)
 
     args = parser.parse_args(argv)
     config = load_config(args.config)

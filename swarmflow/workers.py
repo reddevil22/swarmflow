@@ -225,12 +225,15 @@ class WorkerRunner:
         if spec_path and Path(spec_path).exists():
             spec = Path(spec_path).read_text(encoding="utf-8")
         acceptance = "\n".join(f"- {a}" for a in task.get("acceptance") or []) or "- (see SPEC.md)"
+        test_command = task.get("test_command") or \
+            "your test file(s), e.g. `npx jest <your-test-file>`"
         prompt = template.format(
             task_id=task["id"],
             project_root=str(self.project_root),
             owner_files="\n".join(f"- {f}" for f in task.get("owner_files") or []) or "(none listed)",
             spec=spec,
             acceptance=acceptance,
+            test_command=test_command,
             must_keep_working="Run the project test suite if one exists.",
         )
         return prompt + attempt_context

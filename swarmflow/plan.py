@@ -30,6 +30,8 @@ def validate_plan(plan: dict) -> list[str]:
         if task_id in seen_ids:
             errors.append(f"{task_id}: duplicate id")
         seen_ids.add(task_id)
+        if "test_command" in task and not isinstance(task["test_command"], str):
+            errors.append(f"{task_id}: test_command must be a string")
         owners = task.get("owner_files") or []
         if not owners:
             errors.append(f"{task_id}: owner_files is empty (shared files belong to integration)")
@@ -116,6 +118,7 @@ def enqueue_plan(ledger, plan: dict, project_root: Path, spec_paths: dict) -> di
             acceptance=task.get("acceptance", []),
             spec_path=spec_paths.get(task["id"], ""),
             thinking=task.get("thinking", "high"),
+            test_command=task.get("test_command", ""),
         ):
             inserted += 1
     return {"inserted": inserted, "total": len(plan.get("tasks", []))}

@@ -17,12 +17,16 @@ Output: `plan.yaml` containing
 - create project repo (git init), directory layout, test harness
 - copy `AGENTS.worker.md` -> project `AGENTS.md`, write `SPEC.md` + contracts
 - record ownership map in the ledger
+- freeze the baseline: `swarmflow freeze --project <root>` records sha256 for every
+  non-owned file; owned paths stay mutable, everything else must remain byte-identical
 
 ## Stage 3 - Build waves (swarm)
 - dispatch queued tasks of a wave, concurrency <= config (default 8-10)
 - per-task JSON trace stored under `logs/`; ledger updated on completion
 - artifact audit on every completion: expected files exist, tests run, report present
 - spiral/timeout failures retried once at thinking `medium` (see ARCHITECTURE.md)
+- after each wave the supervisor runs the scope audit (frozen-file integrity plus
+  stray/added-file detection); violations mark the wave failed and are ledgered
 
 ## Stage 4 - Verify (scripts + frontier)
 Per wave boundary:

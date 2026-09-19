@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     owner_files TEXT,
     acceptance TEXT,
     spec_path TEXT,
+    test_command TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'queued',
     attempts INTEGER NOT NULL DEFAULT 0,
     thinking TEXT NOT NULL DEFAULT 'high',
@@ -61,6 +62,10 @@ class Ledger:
         self.conn = sqlite3.connect(str(db_path))
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        try:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN test_command TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         self.conn.commit()
 
     def close(self) -> None:
@@ -68,15 +73,16 @@ class Ledger:
 
     def add_task(self, task_id: str, project: str, wave: int = 1, module: str = "",
                  owner_files: list | None = None, acceptance: list | None = None,
-                 spec_path: str = "", thinking: str = "high") -> bool:
+                 spec_path: str = "", thinking: str = "high",
+                 test_command: str = "") -> bool:
         """Insert a task if it does not exist. Returns True when inserted."""
         now = _now()
         cur = self.conn.execute(
             "INSERT OR IGNORE INTO tasks (id, project, wave, module, owner_files, acceptance,"
-            " spec_path, status, attempts, thinking, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)",
+            " spec_path, test_command, status, attempts, thinking, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)",
             (task_id, project, wave, module, json.dumps(owner_files or []),
-             json.dumps(acceptance or []), spec_path, thinking, now, now),
+             json.dumps(acceptance or []), spec_path, test_command, thinking, now, now),
         )
         self.conn.commit()
         if cur.rowcount:
