@@ -42,7 +42,10 @@ Measured behavior this design relies on (stress test, 2026-09-19):
 | timeout / stall | process timeout (config `worker_timeout_s`) | kill, mark failed, requeue once |
 | tests pass but requirements unmet | verifier stage (roadmap) + acceptance scripts | targeted fix task referencing the finding |
 | silent cross-cutting regression | MUST-KEEP-WORKING contract suite run per wave | reject delivery, fix task |
-| regression introduced at a wave boundary | regression gate re-runs the project suite after every wave (baseline in run.json) | wave marked failed, ledger event, evidence kept, fix task |
+| regression introduced at a wave boundary | regression gate re-runs the project suite after every wave and diffs failing-test fingerprints (baseline in run.json) | wave marked failed, ledger event, compare file, fix task |
+| tests pass but do not discriminate (accommodating tests) | discrimination check: the wave's owned test files re-run at the run's base commit in a throwaway git worktree | verdicts in the ledger + evidence bundle; `discrimination.mode: enforce` fails the wave |
+| suite weakened or deleted while staying green | executed-test inventory (skips/ignores excluded) compared against the baseline | wave marked failed (`suite shrank 13 -> 5`) |
+| uncomparable suite results (unknown runner, legacy baseline) | both runs red with no fingerprints on either side | fail closed under `regression.strict` (default); warning otherwise |
 | modify task delivered without touching its owned files | dispatch-time sha256 snapshots of owned files | outcome `no_changes`, wave fails |
 | scope creep | ownership map diff audit (roadmap) | reject delivery |
 | engine saturation | `/metrics`: waiting > 0 or KV > threshold | hold dispatches (admission control) |
@@ -54,6 +57,12 @@ wave, scoping an integration task's ownership of shared files to its own wave.
 
 Exit codes are never trusted as success signals (observed rc=0 with an empty deliverable).
 
+The regression gate compares failure *identity*, not counts: failing tests are
+fingerprinted (runner summary lines plus embedded typechecker/linter errors) and the
+executed-test inventory is compared alongside. A red -> red run where a different test
+broke therefore fails the gate where a count comparison cannot see it, and a suite that
+quietly shrinks while staying green is rejected as a regression.
+
 ## Verification principles (why the verifier is a separate role)
 
 The local model is a strong local executor and a weak global verifier; in experiments its
@@ -61,6 +70,7 @@ own tests missed requirement gaps and edge cases roughly half the time. Verifica
 1. is authored against the spec, not against the implementation
 2. uses independent recomputation / smoke probing by a different method than the author's
 3. applies revert/discrimination checks where a change has a pre-change behavior
+   (mechanized per wave by `swarmflow/discrimination.py`: parent-state worktree run)
 
 ## Concurrency and capacity (measured)
 
@@ -90,7 +100,8 @@ configured.
 ## Repository layout
 
 ```
-swarmflow/            control plane package (config, ledger, frontier, workers, plan, cli)
+swarmflow/            control plane package (config, ledger, frontier, workers, plan,
+                      audit, regression, discrimination, evidence, cli)
 config/               swarmflow.yaml (models, concurrency, timeouts, paths)
 prompts/              planner, task brief, verifier, acceptance templates
 AGENTS.worker.md      canonical worker rules (copied into scaffolded projects)

@@ -121,7 +121,9 @@ def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
         for line in (state["dirty_tracked"] or [])[:10]:
             print(f"  {line}")
         return 2
+    gitignore_existed = (project_root / ".gitignore").exists()
     added = ensure_gitignore_entries(project_root, [".swarmflow/", "logs/"])
+    audit_ignores = [] if gitignore_existed else [".gitignore"]
     if added:
         print(f"added to .gitignore: {', '.join(added)}")
     # preserve a regression command provided via a previous recon override
@@ -142,10 +144,12 @@ def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
         except ValueError:
             data = {}
         data["updated_at"] = now
+        data.setdefault("audit_ignores", audit_ignores)
         run_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     else:
         data = {"plan_path": str(Path(args.plan).resolve()), "mode": "brownfield",
                 "branch": branch, "base_sha": state.get("head", ""),
+                "audit_ignores": audit_ignores,
                 "created_at": now, "updated_at": now}
         run_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     print(f"brownfield preflight ok: branch {branch} ({action}), "
@@ -193,8 +197,28 @@ def _load_run_state(project_root: str) -> dict:
 def _save_regression_baseline(project_root: str, baseline: dict) -> None:
     path = Path(project_root) / ".swarmflow" / "run.json"
     data = _load_run_state(project_root)
-    data.setdefault("regression", {})["baseline"] = baseline
+    stored = {key: value for key, value in baseline.items() if key != "output"}
+    data.setdefault("regression", {})["baseline"] = stored
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _slim_comparison(comparison: dict) -> dict:
+    """Comparison without the raw captured outputs (used for reports and compare files)."""
+    slim = {key: value for key, value in comparison.items()
+            if key not in ("baseline", "current")}
+    slim["version"] = 1
+    for side in ("baseline", "current"):
+        value = comparison.get(side)
+        slim[side] = ({key: item for key, item in value.items() if key != "output"}
+                      if isinstance(value, dict) else value)
+    return slim
+
+
+def _write_comparison(project_root: str, wave: int, comparison: dict) -> Path:
+    path = Path(project_root) / ".swarmflow" / "evidence" / f"wave{wave}.compare.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_slim_comparison(comparison), indent=2), encoding="utf-8")
+    return path
 
 
 def _recon_regression_command(project_root: str) -> str:
@@ -229,17 +253,28 @@ def cmd_wave_run(args, config) -> int:
               f"{info['owned']} owned path(s)")
     regression_enabled = bool(config["regression"].get("enabled", True)) \
         and not args.skip_regression
+    regression_timeout = float(config["regression"]["timeout_s"])
+    strict = bool(config["regression"].get("strict", True)) or args.strict
+    tolerance = int(config["regression"].get("shrink_tolerance", 0))
     regression_command = config["regression"].get("command") \
         or _recon_regression_command(project_root)
     baseline = (run_state.get("regression") or {}).get("baseline")
-    if regression_enabled and regression_command and baseline is None:
+    if regression_enabled and regression_command and args.rebaseline:
         baseline = run_regression(
-            project_root, regression_command,
-            timeout_s=float(config["regression"]["timeout_s"]),
+            project_root, regression_command, timeout_s=regression_timeout,
+            evidence_path=str(Path(project_root) / ".swarmflow" / "evidence" / "baseline.txt"))
+        _save_regression_baseline(project_root, baseline)
+        ledger.record_event(tasks[0]["id"], "rebaseline",
+                            "operator re-recorded the regression baseline")
+        print(f"regression baseline re-recorded: rc={baseline.get('rc')} "
+              f"failures={baseline.get('failures')} tests_ran={baseline.get('tests_ran')}")
+    elif regression_enabled and regression_command and baseline is None:
+        baseline = run_regression(
+            project_root, regression_command, timeout_s=regression_timeout,
             evidence_path=str(Path(project_root) / ".swarmflow" / "evidence" / "baseline.txt"))
         _save_regression_baseline(project_root, baseline)
         print(f"regression baseline recorded: rc={baseline.get('rc')} "
-              f"failures={baseline.get('failures')}")
+              f"failures={baseline.get('failures')} tests_ran={baseline.get('tests_ran')}")
     elif regression_enabled and not regression_command:
         print("regression gate skipped: no command detected (run `swarmflow recon` "
               "or set regression.command)")
@@ -264,27 +299,46 @@ def cmd_wave_run(args, config) -> int:
         if not args.json:
             print(f"  {entry['task_id']:<20} {entry['outcome']:<18} status={status} "
                   f"turns={entry['turns']} out_tokens={entry['out_tokens']}")
-    if regression_enabled and regression_command:
+    if regression_enabled and regression_command and not args.rebaseline:
         current = run_regression(
-            project_root, regression_command,
-            timeout_s=float(config["regression"]["timeout_s"]),
+            project_root, regression_command, timeout_s=regression_timeout,
             evidence_path=str(Path(project_root) / ".swarmflow" / "evidence"
                               / f"wave{args.wave}.txt"))
-        comparison = compare(baseline, current)
-        report["regression"] = comparison
+        comparison = compare(baseline, current, strict=strict,
+                             shrink_tolerance=tolerance)
+        report["regression"] = _slim_comparison(comparison)
+        compare_path = _write_comparison(project_root, args.wave, comparison)
         if comparison["regressed"]:
             failures += 1
             reason = "; ".join(comparison["reasons"])
             ledger.record_event(tasks[0]["id"], "regression", reason[:500])
             print(f"REGRESSION DETECTED: {reason}")
+            for name in comparison["new_failures"][:10]:
+                print(f"  new failing test: {name}")
+            if comparison["fixed_failures"]:
+                print(f"  fixed: {len(comparison['fixed_failures'])} known-failing "
+                      f"test(s)")
+            print(f"  comparison: {compare_path}")
             print("  fix the regression before continuing (or --skip-regression at "
                   "your own risk)")
+        elif comparison["indeterminate"]:
+            print(f"REGRESSION GATE WARNING: {'; '.join(comparison['reasons'])}")
+            print("  the results could not be compared; re-record the baseline with "
+                  "--rebaseline once the current state is known-good")
         elif baseline is not None:
-            print("regression gate: no new failures")
+            detail = "; ".join(comparison["reasons"]) or "green -> green"
+            print(f"regression gate: no new failures ({detail})")
+    disc_state, disc_result = _run_discrimination(
+        project_root, args.wave, tasks, config, ledger,
+        dict(run_state, regression={"baseline": baseline}), quiet=args.json)
+    report["discrimination"] = disc_result
+    if disc_state == "fail":
+        failures += 1
     report["ledger"] = ledger.counts()
+    audit_ignores = list(config["audit"]["ignore_extra"]) \
+        + list(run_state.get("audit_ignores") or [])
     audit_state, audit_result = _run_audit(project_root, ledger, tasks[0]["id"],
-                                           quiet=args.json,
-                                           ignores=config["audit"]["ignore_extra"])
+                                           quiet=args.json, ignores=audit_ignores)
     report["audit"] = {"state": audit_state, "result": audit_result}
     ledger.close()
     if args.json:
@@ -292,6 +346,49 @@ def cmd_wave_run(args, config) -> int:
     else:
         print("ledger:", report["ledger"])
     return 0 if failures == 0 and audit_state != "fail" else 1
+
+
+def _run_discrimination(project_root: str, wave: int, tasks: list, config: dict,
+                        ledger, run_state: dict, quiet: bool = False) -> tuple:
+    """Run this wave's owned test files against the parent state. Returns (state, result)."""
+    from .discrimination import run_check
+    path = Path(project_root) / ".swarmflow" / "evidence" / f"wave{wave}.discrimination.json"
+    try:
+        result = run_check(project_root, wave, tasks, config, run_state)
+    except Exception as exc:                      # a check bug must never break a wave
+        result = {"version": 1, "wave": wave, "indeterminate": True,
+                  "reason": f"check crashed: {exc}", "counts": {}, "files": []}
+    slim = {key: value for key, value in result.items() if key != "output"}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(slim, indent=2), encoding="utf-8")
+    if result.get("skipped"):
+        if not quiet:
+            print(f"discrimination check skipped: {result['skipped']}")
+        return "skipped", slim
+    counts = result.get("counts") or {}
+    ledger.record_event(tasks[0]["id"], "discrimination", json.dumps(counts)[:500])
+    enforce = str(config["discrimination"].get("mode", "warn")).lower() == "enforce"
+    non_discriminating = counts.get("passes_at_parent", 0) + counts.get("deleted_in_wave", 0)
+    state = "ok"
+    if result.get("indeterminate"):
+        state = "fail" if enforce else "warn"
+        if not quiet:
+            print(f"discrimination INDETERMINATE: {result.get('reason') or 'run failed'}")
+    elif non_discriminating:
+        state = "fail" if enforce else "warn"
+        if not quiet:
+            print(f"discrimination: {counts.get('fails_at_parent', 0)}/"
+                  f"{result.get('tested', 0)} changed test file(s) fail at base; "
+                  f"{non_discriminating} non-discriminating"
+                  f"{' (enforce)' if enforce else ' (evidence only)'}")
+    elif not quiet:
+        print(f"discrimination: {counts.get('fails_at_parent', 0)}/"
+              f"{result.get('tested', 0)} changed test file(s) fail at base")
+    if not quiet:
+        for entry in result.get("files") or []:
+            if entry["verdict"] in ("passes_at_parent", "deleted_in_wave", "error_at_parent"):
+                print(f"  {entry['verdict']}: {entry['path']}")
+    return state, slim
 
 
 def cmd_status(args, config) -> int:
@@ -352,7 +449,10 @@ def cmd_freeze(args, config) -> int:
 
 def cmd_audit(args, config) -> int:
     project_root = str(Path(args.project).resolve())
-    result = audit(project_root, ignores=config["audit"]["ignore_extra"])
+    run_state = _load_run_state(project_root)
+    ignores = list(config["audit"]["ignore_extra"]) \
+        + list(run_state.get("audit_ignores") or [])
+    result = audit(project_root, ignores=ignores)
     kinds = {violation["kind"] for violation in result["violations"]}
     if args.json:
         print(json.dumps(result))
@@ -407,6 +507,11 @@ def main(argv: list[str] | None = None) -> int:
     wave.add_argument("--concurrency", type=int, default=None)
     wave.add_argument("--skip-regression", action="store_true",
                       help="do not run/compare the project regression suite")
+    wave.add_argument("--rebaseline", action="store_true",
+                      help="re-record the regression baseline before this wave "
+                           "(skips its comparison)")
+    wave.add_argument("--strict", action="store_true",
+                      help="force fail-closed regression comparison for this wave")
     wave.add_argument("--json", action="store_true")
     wave.set_defaults(func=cmd_wave_run)
 

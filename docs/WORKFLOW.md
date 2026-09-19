@@ -31,9 +31,12 @@ Output: `plan.yaml` containing
 ## Stage 4 - Verify (scripts + frontier)
 Per wave boundary:
 1. full regression suite + MUST-KEEP-WORKING contract checks
-2. requirement->test traceability matrix parsed from worker reports
-3. verifier pass (frontier) over specs vs. delivered artifacts; findings become fix tasks
-4. new tasks (fixes/retries) are appended to the current or next wave
+2. discrimination check: the wave's owned test files re-run at the run's base commit in
+   a throwaway worktree (`evidence/wave<N>.discrimination.json`; `enforce` mode fails
+   the wave, `warn` records evidence)
+3. requirement->test traceability matrix parsed from worker reports
+4. verifier pass (frontier) over specs vs. delivered artifacts; findings become fix tasks
+5. new tasks (fixes/retries) are appended to the current or next wave
 
 ## Stage 5 - Integrate
 - integration session(s) own shared files (`__init__`, CLI wiring, package config)
@@ -66,8 +69,15 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    mode/branch/base_sha (first write wins).
 4. **Waves**: before each wave, freeze only that wave's owner map (per-wave ownership).
    After each wave: the project regression suite runs and is compared against the
-   baseline recorded in `run.json` (new failures fail the wave), then the git-based
-   scope audit runs. Untouched deliveries are rejected (`no_changes`).
+   baseline in `run.json` by failure identity - fingerprinted failing tests plus an
+   executed-test inventory, so a different test breaking at equal counts and a suite
+   shrinking while staying green both fail the wave. Uncomparable results fail closed
+   (`regression.strict`), the comparison is written to `evidence/wave<N>.compare.json`,
+   and `--rebaseline` re-records the baseline when the current state is known-good.
+   Then the discrimination check re-runs the wave's owned test files at `base_sha` in a
+   throwaway git worktree (verdicts to `evidence/wave<N>.discrimination.json`; warn by
+   default, `enforce` fails the wave). Then the git-based scope audit runs. Untouched
+   deliveries are rejected (`no_changes`).
 5. **Verify/accept**: `swarmflow evidence --project P` assembles the bundle (recon
    digest, ledger, worker reports from traces, audit, regression, bounded diff of
    tests + manifests) for the verifier/acceptance passes.

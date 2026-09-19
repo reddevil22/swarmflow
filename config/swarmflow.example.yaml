@@ -72,6 +72,19 @@ regression:
   enabled: true           # run the project test suite at every wave boundary
   command: ""             # overrides the recon-detected regression command
   timeout_s: 900          # kill a hung/watch-mode suite instead of hanging wave-run
+  shrink_tolerance: 0     # tolerated drop in executed tests before "suite shrank" fails
+  strict: true            # uncomparable results (no fingerprints) fail the gate closed
+
+discrimination:
+  # After each wave, the wave's owned test files are run against the parent state
+  # (the run's base commit) in a throwaway git worktree: a test that also passes there
+  # pins nothing about the change. Verdicts land in the evidence bundle.
+  enabled: true           # brownfield runs with a base_sha only
+  mode: warn              # warn (evidence only) | enforce (non-discriminating tests fail the wave)
+  link_dirs: ["node_modules"]   # directories linked into the worktree (npm layout)
+  timeout_s: 900          # per test-command run inside the parent worktree
+  max_test_files: 20      # cap on files checked per wave
+  skip_patterns: []       # fnmatch; add browser-e2e globs when they need a live server
 
 git:
   branch_prefix: "swarmflow/"   # brownfield run branches are <prefix><project_name>

@@ -91,7 +91,7 @@ def bundle(project_root: str, ledger) -> str:
         lines.append("")
 
     lines.append("## Audit")
-    result = audit(str(root))
+    result = audit(str(root), ignores=state.get("audit_ignores") or [])
     lines.append(f"- ok: {result['ok']}")
     lines.append("- note: .gitignore additions (.swarmflow/, logs/) are made by the "
                  "brownfield preflight, before the first freeze")
@@ -104,12 +104,34 @@ def bundle(project_root: str, ledger) -> str:
     if baseline:
         lines.append(f"- baseline: rc={baseline.get('rc')} "
                      f"failures={baseline.get('failures')} "
+                     f"tests_ran={baseline.get('tests_ran')} "
                      f"command=`{baseline.get('command')}`")
+        known_failing = baseline.get("fingerprints") or []
+        if known_failing:
+            lines.append(f"- baseline failing tests ({len(known_failing)}): "
+                         + ", ".join(known_failing[:10]))
     else:
         lines.append("- baseline: (none recorded)")
     evidence_dir = root / ".swarmflow" / "evidence"
     for path in sorted(evidence_dir.glob("*.txt")):
         lines.append(f"- evidence file: {path.relative_to(root)}")
+    compare_files = sorted(evidence_dir.glob("wave*.compare.json"),
+                           key=lambda item: item.stat().st_mtime)
+    if compare_files:
+        latest = compare_files[-1]
+        try:
+            comparison = json.loads(latest.read_text(encoding="utf-8"))
+        except ValueError:
+            comparison = {}
+        lines.append(f"- latest comparison ({latest.name}): "
+                     f"regressed={comparison.get('regressed')} "
+                     f"indeterminate={comparison.get('indeterminate')}")
+        for reason in comparison.get("reasons") or []:
+            lines.append(f"  - {reason}")
+        for name in (comparison.get("new_failures") or [])[:10]:
+            lines.append(f"  - new failing test: {name}")
+        for name in (comparison.get("fixed_failures") or [])[:10]:
+            lines.append(f"  - fixed: {name}")
     wave_files = sorted(evidence_dir.glob("wave*.txt"))
     if wave_files:
         tail = wave_files[-1].read_text(encoding="utf-8", errors="replace")[-2000:]
@@ -117,6 +139,36 @@ def bundle(project_root: str, ledger) -> str:
         lines.append("```")
         lines.append(tail)
         lines.append("```")
+    lines.append("")
+
+    lines.append("## Discrimination (wave tests at the parent state)")
+    disc_files = sorted(evidence_dir.glob("wave*.discrimination.json"),
+                        key=lambda item: item.stat().st_mtime)
+    if not disc_files:
+        lines.append("- (none recorded)")
+    else:
+        latest = disc_files[-1]
+        try:
+            check = json.loads(latest.read_text(encoding="utf-8"))
+        except ValueError:
+            check = {}
+        if check.get("skipped"):
+            lines.append(f"- skipped: {check['skipped']}")
+        else:
+            counts = check.get("counts") or {}
+            lines.append(f"- {latest.name}: base {(check.get('base_sha_short') or '?')}, "
+                         f"copied {len(check.get('copied') or [])} file(s), "
+                         f"red_parent={check.get('red_parent')}, "
+                         f"indeterminate={check.get('indeterminate')}")
+            lines.append("- verdicts: " + ", ".join(
+                f"{verdict}={counts.get(verdict, 0)}" for verdict in (
+                    "fails_at_parent", "passes_at_parent", "error_at_parent",
+                    "preexisting_at_parent", "deleted_in_wave", "not_observed")))
+            if check.get("reason"):
+                lines.append(f"- notes: {check['reason']}")
+            for entry in check.get("files") or []:
+                detail = f" ({', '.join(entry['evidence'][:2])})" if entry.get("evidence") else ""
+                lines.append(f"  - {entry['verdict']}: {entry['path']}{detail}")
     lines.append("")
 
     lines.append("## Git diff vs base")

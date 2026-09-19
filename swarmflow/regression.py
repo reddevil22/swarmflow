@@ -3,6 +3,11 @@
 Runs the project's configured suite (usually recon-detected, overridable) and compares
 against a recorded baseline. This is the brownfield backbone: a feature is only
 "delivered" if nothing that worked before broke.
+
+Comparison is by failure identity, not counts: exit codes and failure counts cannot see
+a different test breaking at equal counts (red -> red), nor a suite quietly shrinking.
+When identity cannot be compared the gate says so and - under the default strict mode -
+fails closed.
 """
 
 import re
@@ -10,9 +15,18 @@ import subprocess
 import time
 from pathlib import Path
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
+MAX_FINGERPRINT = 200
+
+
+def _sanitize(output: str) -> str:
+    """Strip ANSI/OSC escape sequences and carriage returns before parsing."""
+    return ANSI_RE.sub("", output).replace("\r", "")
+
 
 def parse_failures(output: str) -> int | None:
     """Best-effort failure count from common test-runner summaries. None if unknown."""
+    output = _sanitize(output)
     match = re.search(r"Tests:\s+.*?(\d+) failed", output)              # jest
     if match:
         return int(match.group(1))
@@ -28,6 +42,239 @@ def parse_failures(output: str) -> int | None:
     return None
 
 
+# --------------------------------------------------------------- fingerprints
+# Fingerprint extractors run as a union over the whole output: a jest run embeds
+# ts-jest typecheck errors, and a project's suite may not be a single runner. Each
+# pattern is chosen so it cannot match another family's output.
+
+PYTEST_FAIL_LINE = re.compile(r"^(?:FAILED|ERROR)\s+(.+?)(?:\s+-\s+.*)?$", re.MULTILINE)
+PYTEST_ERROR_LINE = re.compile(r"^ERROR\s+(.+?)(?:\s+-\s+.*)?$", re.MULTILINE)
+JEST_FAIL_SUITE = re.compile(r"^\s*FAIL\s+(\S+)\s*$", re.MULTILINE)
+VITEST_FAIL = re.compile(r"^\s*FAIL\s+(\S+)\s+>\s+(.+?)\s*$", re.MULTILINE)
+VITEST_LOAD_FAIL = re.compile(r"^\s*FAIL\s+(\S+)\s*\[", re.MULTILINE)
+JEST_BULLET = re.compile(r"^\s*●\s*(.+?)\s*$", re.MULTILINE)
+JEST_NON_TEST_BULLETS = ("Console", "Validation Error", "Validation Warning",
+                         "Test suite failed to run")
+TS_ERROR = re.compile(r"^(.+?)\((\d+),(\d+)\): error (TS\d+):")
+MYPY_ERROR = re.compile(r"^(.+?):(\d+): error: (.+)$")
+ESLINT_COMPACT = re.compile(r"^(.+?): line (\d+), col (\d+), (?:Error|Warning) - .+\(([a-z0-9-]+)\)$")
+GENERIC_ERROR = re.compile(r"^(.+?):(\d+):\d*:?\s?error:", re.IGNORECASE)
+GO_FAIL = re.compile(r"^\s*--- FAIL: (\S+)", re.MULTILINE)
+GO_BUILD_FAIL = re.compile(r"^FAIL\s+(\S+)\s+\[build failed\]", re.MULTILINE)
+CARGO_CASE = re.compile(r"^---- (\S+) stdout ----", re.MULTILINE)
+
+
+def _pytest_fingerprints(output: str) -> list:
+    return [match.strip()[:MAX_FINGERPRINT]
+            for match in PYTEST_FAIL_LINE.findall(output)]
+
+
+def _jest_fingerprints(output: str) -> list:
+    fingerprints = [path[:MAX_FINGERPRINT] for path in JEST_FAIL_SUITE.findall(output)]
+    fingerprints += [f"{path} > {name}"[:MAX_FINGERPRINT]
+                     for path, name in VITEST_FAIL.findall(output)]
+    for name in JEST_BULLET.findall(output):
+        if name.startswith(JEST_NON_TEST_BULLETS):
+            continue
+        fingerprints.append(name[:MAX_FINGERPRINT])
+    return fingerprints
+
+
+def _compiler_fingerprints(output: str) -> list:
+    """Typechecker/linter errors. Line and column are dropped: a shifted line is the
+    same defect; the file and error code are the identity."""
+    fingerprints = []
+    for line in output.splitlines():
+        line = line.strip()
+        match = TS_ERROR.match(line)
+        if match:
+            fingerprints.append(f"{match.group(4)} {match.group(1)}")
+            continue
+        match = MYPY_ERROR.match(line)
+        if match:
+            code_match = re.search(r"\[([a-z0-9-]+)\]\s*$", match.group(3))
+            code = code_match.group(1) if code_match else "mypy"
+            fingerprints.append(f"{code} {match.group(1)}")
+            continue
+        match = ESLINT_COMPACT.match(line)
+        if match:
+            fingerprints.append(f"{match.group(4)} {match.group(1)}")
+            continue
+        match = GENERIC_ERROR.match(line)
+        if match:
+            fingerprints.append(f"error {match.group(1)}")
+    return fingerprints
+
+
+def _go_fingerprints(output: str) -> list:
+    """Go test names (subtests kept). A package build failure collapses every compile
+    error in that package into one fingerprint."""
+    fingerprints = [f"Test {name}" for name in GO_FAIL.findall(output)]
+    fingerprints += [f"build-failed: {pkg}" for pkg in GO_BUILD_FAIL.findall(output)]
+    return fingerprints
+
+
+def _cargo_fingerprints(output: str) -> list:
+    if "test result:" not in output:
+        return []
+    fingerprints = CARGO_CASE.findall(output)
+    in_block = False
+    for line in output.splitlines():
+        if line.strip() == "failures:":
+            in_block = True
+            continue
+        if not in_block:
+            continue
+        if not line.strip():
+            in_block = False
+            continue
+        name = line.strip()
+        if line.startswith((" ", "\t")) and re.fullmatch(r"[\w:/.\-\[\]<>]+", name):
+            fingerprints.append(name)
+    return fingerprints
+
+
+def parse_fingerprints(output: str) -> list:
+    """Union of all family extractors, deduplicated and sorted."""
+    clean = _sanitize(output)
+    found = (_pytest_fingerprints(clean) + _jest_fingerprints(clean)
+             + _compiler_fingerprints(clean) + _go_fingerprints(clean)
+             + _cargo_fingerprints(clean))
+    return sorted({name for name in found if name})
+
+
+def _jest_suite_errors(output: str) -> list:
+    """Jest paths whose `FAIL <path>` line is followed by the module-level
+    `Test suite failed to run` marker (resolution/transform/compile failures)."""
+    lines = output.splitlines()
+    errors = []
+    for index, line in enumerate(lines):
+        match = JEST_FAIL_SUITE.match(line.strip())
+        if not match:
+            continue
+        for follow in lines[index + 1:index + 5]:
+            if "●" in follow and "Test suite failed to run" in follow:
+                errors.append(match.group(1)[:MAX_FINGERPRINT])
+                break
+    return errors
+
+
+def parse_errors(output: str) -> list:
+    """Collection/run-level entries: the file could not be executed at all (import,
+    compile, transform), as opposed to a test assertion failing."""
+    clean = _sanitize(output)
+    found = ([match.strip()[:MAX_FINGERPRINT]
+              for match in PYTEST_ERROR_LINE.findall(clean)]
+             + [path[:MAX_FINGERPRINT] for path in VITEST_LOAD_FAIL.findall(clean)]
+             + _jest_suite_errors(clean) + _compiler_fingerprints(clean))
+    return sorted({name for name in found if name})
+
+
+# ----------------------------------------------------------------- inventory
+
+JEST_SUMMARY = re.compile(r"^\s*Tests:?\s+(.+)$", re.MULTILINE)
+VITEST_MARKER = re.compile(r"^\s*Test Files\s+", re.MULTILINE)
+JEST_COUNTS = re.compile(r"(\d+) (failed|passed|skipped|todo|total)")
+CARGO_SUMMARY = re.compile(r"^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; "
+                           r"(\d+) ignored", re.MULTILINE)
+GO_PACKAGE_LINE = re.compile(r"^(?:ok|FAIL)\s+\S+\s+(?:\(cached\)|\[\S[^\]]*\]|[0-9.]+s)",
+                             re.MULTILINE)
+PYTEST_SUMMARY_COUNTS = re.compile(
+    r"(\d+) (passed|failed|error|errors|skipped|xfailed|deselected)\b")
+PYTEST_BARE_SUMMARY = re.compile(
+    r"^(?:\d+ (?:passed|failed|error|errors|skipped|xfailed|deselected)(?:, )?)+$")
+
+
+def _jest_inventory(output: str) -> dict | None:
+    summaries = JEST_SUMMARY.findall(output)
+    if not summaries:
+        return None
+    tests_ran = 0
+    skipped = 0
+    for summary in summaries:
+        counts = {kind: 0 for kind in ("failed", "passed", "skipped", "todo", "total")}
+        for number, kind in JEST_COUNTS.findall(summary):
+            counts[kind] += int(number)
+        skipped += counts["skipped"] + counts["todo"]
+        tests_ran += counts["total"] if counts["total"] else \
+            counts["failed"] + counts["passed"] + counts["skipped"] + counts["todo"]
+    return {"tests_ran": tests_ran - skipped, "skipped": skipped}
+
+
+def _cargo_inventory(output: str) -> dict | None:
+    summaries = CARGO_SUMMARY.findall(output)
+    if not summaries:
+        return None
+    passed = built = ignored = 0
+    for passed_n, failed_n, ignored_n in summaries:
+        passed += int(passed_n)
+        built += int(failed_n)
+        ignored += int(ignored_n)
+    return {"tests_ran": passed + built, "skipped": ignored}
+
+
+def _go_inventory(output: str) -> dict | None:
+    packages = GO_PACKAGE_LINE.findall(output)
+    if not packages:
+        return None
+    return {"tests_ran": len(packages), "skipped": None}
+
+
+def _pytest_inventory(output: str) -> dict | None:
+    summary = ""
+    for candidate in output.splitlines():
+        stripped = candidate.strip()
+        if "no tests ran" in stripped:
+            summary = stripped
+        elif PYTEST_SUMMARY_COUNTS.search(stripped) \
+                and (" in " in stripped or PYTEST_BARE_SUMMARY.match(stripped)):
+            summary = stripped
+    if not summary:
+        return None
+    if "no tests ran" in summary:
+        return {"tests_ran": 0, "skipped": 0}
+    counts = {}
+    for number, kind in PYTEST_SUMMARY_COUNTS.findall(summary):
+        counts[kind] = counts.get(kind, 0) + int(number)
+    tests_ran = sum(counts.get(kind, 0) for kind in ("passed", "failed", "error", "errors"))
+    return {"tests_ran": tests_ran, "skipped": counts.get("skipped", 0)}
+
+
+INVENTORIES = [
+    ("jest", "tests", _jest_inventory),
+    ("cargo", "tests", _cargo_inventory),
+    ("go", "packages", _go_inventory),
+    ("pytest", "tests", _pytest_inventory),
+]
+
+
+def parse_report(output: str) -> dict:
+    """Parse a suite run: failure count, failure fingerprints, executed-test inventory.
+
+    ``tests_ran`` counts executed tests only (skips/ignores excluded) so weakening a
+    suite by skipping or deleting tests shows up as shrinkage.
+    """
+    clean = _sanitize(output)
+    report = {"family": "unknown", "failures": parse_failures(clean),
+              "fingerprints": parse_fingerprints(clean),
+              "errors": parse_errors(clean), "tests_ran": None,
+              "skipped": None, "unit": "tests"}
+    if VITEST_MARKER.search(clean):
+        report["family"] = "vitest"
+        found = _jest_inventory(clean)
+        if found:
+            report.update(found)
+        return report
+    for family, unit, inventory in INVENTORIES:
+        found = inventory(clean)
+        if found:
+            report["family"] = family
+            report["unit"] = unit
+            report.update(found)
+            break
+    return report
+
+
 def run_regression(project_root: str, command: str, timeout_s: float = 900,
                    evidence_path: str | None = None) -> dict:
     """Run the suite via the shell (user-visible commands, .cmd shims), capture output."""
@@ -38,19 +285,33 @@ def run_regression(project_root: str, command: str, timeout_s: float = 900,
         proc = subprocess.run(command, shell=True, cwd=str(project_root),
                               capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=timeout_s)
-        output = (proc.stdout or "")
+        full = (proc.stdout or "")
         if proc.stderr:
-            output += ("\n" if output else "") + proc.stderr
+            full += ("\n" if full else "") + proc.stderr
+        report = parse_report(full)
         result["rc"] = proc.returncode
-        result["failures"] = parse_failures(output)
+        result["failures"] = report["failures"]
+        result["family"] = report["family"]
+        result["fingerprints"] = report["fingerprints"]
+        result["errors"] = report["errors"]
+        result["tests_ran"] = report["tests_ran"]
+        result["skipped"] = report["skipped"]
+        result["unit"] = report["unit"]
         result["ok"] = proc.returncode == 0
         if proc.returncode == 5 and result["failures"] is None:
             result["note"] = "no tests collected (pytest rc=5) - check the command"
-        result["output"] = output[-20000:]
+        result["output"] = full[-20000:]
     except subprocess.TimeoutExpired as exc:
+        partial = exc.stdout if isinstance(exc.stdout, str) else ""
+        report = parse_report(partial)
         result["timeout"] = True
-        captured = exc.stdout if isinstance(exc.stdout, str) else ""
-        result["output"] = captured[-20000:]
+        result["family"] = report["family"]
+        result["fingerprints"] = report["fingerprints"]
+        result["errors"] = report["errors"]
+        result["tests_ran"] = report["tests_ran"]
+        result["skipped"] = report["skipped"]
+        result["unit"] = report["unit"]
+        result["output"] = partial[-20000:]
         result["note"] = f"timed out after {timeout_s}s"
     except OSError as exc:
         result["note"] = f"could not launch: {exc}"
@@ -64,29 +325,76 @@ def run_regression(project_root: str, command: str, timeout_s: float = 900,
     return result
 
 
-def compare(baseline: dict | None, current: dict) -> dict:
-    """Decide whether `current` regressed relative to `baseline`."""
+# ------------------------------------------------------------------ comparison
+
+def compare(baseline: dict | None, current: dict, strict: bool = True,
+            shrink_tolerance: int = 0) -> dict:
+    """Decide whether `current` regressed relative to `baseline`.
+
+    Identity-based for red -> red (new failing tests), inventory-based for green -> green
+    (suite shrinkage), and fail-closed on uncomparable results when ``strict``.
+    """
     if baseline is None:
         return {"regressed": False, "reasons": ["no baseline recorded"],
-                "baseline_was_red": False, "baseline": None, "current": current}
+                "baseline_was_red": False, "indeterminate": False, "strict": strict,
+                "new_failures": [], "fixed_failures": [], "suite_delta": None,
+                "baseline": None, "current": current}
+
     regressed = False
     reasons = []
-    if current.get("timeout"):
-        regressed = True
-        reasons.append("regression run timed out")
+    indeterminate = False
     baseline_ok = baseline.get("rc") == 0
     current_ok = current.get("rc") == 0
-    if baseline_ok and not current_ok:
+    base_fp = set(baseline.get("fingerprints") or [])
+    curr_fp = set(current.get("fingerprints") or [])
+    new_failures = sorted(curr_fp - base_fp)
+    fixed_failures = sorted(base_fp - curr_fp)
+    suite_delta = None
+    base_tests = baseline.get("tests_ran")
+    curr_tests = current.get("tests_ran")
+    if isinstance(base_tests, int) and isinstance(curr_tests, int):
+        suite_delta = curr_tests - base_tests
+    unit = current.get("unit") or baseline.get("unit") or "tests"
+
+    if current.get("timeout"):
+        regressed = True
+        indeterminate = True
+        reasons.append("regression run timed out")
+    elif baseline_ok and not current_ok:
         regressed = True
         reasons.append(f"exit code {baseline.get('rc')} -> {current.get('rc')}")
-    base_failures = baseline.get("failures")
-    curr_failures = current.get("failures")
-    if base_failures is not None and curr_failures is not None \
-            and curr_failures > base_failures:
+        if new_failures:
+            reasons.append("new failing tests: " + ", ".join(new_failures[:5]))
+    elif base_fp and curr_fp:
+        if new_failures:
+            regressed = True
+            reasons.append("new failing tests: " + ", ".join(new_failures[:5]))
+        else:
+            reasons.append(f"no new failing tests ({len(curr_fp)} known-failing, "
+                           f"{len(fixed_failures)} fixed)")
+    elif not baseline_ok and not current_ok:
+        base_count = baseline.get("failures")
+        curr_count = current.get("failures")
+        if base_count is not None and curr_count is not None and curr_count > base_count:
+            regressed = True
+            reasons.append(f"failures {base_count} -> {curr_count}")
+        else:
+            indeterminate = True
+            reasons.append("failure identity not available (no fingerprints)")
+    elif not baseline_ok and current_ok:
+        reasons.append("baseline was already failing; current run is green")
+
+    if not current.get("timeout") and suite_delta is not None \
+            and suite_delta < -abs(int(shrink_tolerance)):
         regressed = True
-        reasons.append(f"failures {base_failures} -> {curr_failures}")
-    if not baseline_ok and not regressed:
-        reasons.append("baseline was already failing; no new failures introduced")
+        reasons.append(f"suite shrank {base_tests} -> {curr_tests} {unit}")
+
+    if indeterminate and strict and not regressed:
+        regressed = True
+    if indeterminate and not strict and not regressed:
+        reasons[-1] = "warning: " + reasons[-1]
     return {"regressed": regressed, "reasons": reasons,
-            "baseline_was_red": not baseline_ok,
+            "baseline_was_red": not baseline_ok, "indeterminate": indeterminate,
+            "strict": strict, "new_failures": new_failures,
+            "fixed_failures": fixed_failures, "suite_delta": suite_delta,
             "baseline": baseline, "current": current}

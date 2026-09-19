@@ -45,6 +45,8 @@ def test_bundle_contains_all_sections(tmp_path):
     (repo / ".swarmflow" / "run.json").write_text(json.dumps({
         "mode": "brownfield", "branch": "swarmflow/demo", "base_sha": head,
         "regression": {"baseline": {"rc": 0, "failures": None,
+                                    "tests_ran": 3,
+                                    "fingerprints": ["tests/test_app.py::test_ok"],
                                     "command": "python -m pytest -q"}},
     }), encoding="utf-8")
     (repo / ".swarmflow" / "recon.json").write_text(json.dumps({
@@ -76,6 +78,24 @@ def test_bundle_contains_all_sections(tmp_path):
     (repo / ".swarmflow" / "evidence").mkdir()
     (repo / ".swarmflow" / "evidence" / "wave1.txt").write_text(
         "$ cmd\n(rc=0)\nFINAL-TAIL-MARKER\n", encoding="utf-8")
+    (repo / ".swarmflow" / "evidence" / "wave1.compare.json").write_text(json.dumps({
+        "version": 1, "regressed": True, "indeterminate": False,
+        "reasons": ["new failing tests: tests/test_app.py::test_x"],
+        "new_failures": ["tests/test_app.py::test_x"], "fixed_failures": [],
+    }), encoding="utf-8")
+    (repo / ".swarmflow" / "evidence" / "wave1.discrimination.json").write_text(
+        json.dumps({
+            "version": 1, "wave": 1, "base_sha_short": "abc1234567",
+            "red_parent": False, "indeterminate": False,
+            "copied": [{"path": "tests/test_app.py", "sha256": "x"}],
+            "counts": {"fails_at_parent": 1, "passes_at_parent": 1},
+            "files": [
+                {"path": "tests/test_app.py", "verdict": "fails_at_parent",
+                 "evidence": ["tests/test_app.py::test_x"]},
+                {"path": "tests/test_other.py", "verdict": "passes_at_parent",
+                 "evidence": []},
+            ],
+        }), encoding="utf-8")
 
     # a change on a sensitive path (test file)
     (repo / "tests" / "test_app.py").write_text("def test_ok():\n    assert 1\n",
@@ -89,7 +109,12 @@ def test_bundle_contains_all_sections(tmp_path):
                    "acceptance: the probe passes",
                    "## Worker reports", "REPORT CHANGES", "## Audit", "## Regression",
                    "python -m pytest -q", "FINAL-TAIL-MARKER", "## Git diff vs base",
-                   "### Sensitive paths diff", "test_app.py"]:
+                   "### Sensitive paths diff", "test_app.py",
+                   "baseline failing tests (1)", "tests/test_app.py::test_ok",
+                   "latest comparison (wave1.compare.json)",
+                   "new failing test: tests/test_app.py::test_x",
+                   "## Discrimination", "fails_at_parent: tests/test_app.py",
+                   "passes_at_parent: tests/test_other.py"]:
         assert marker in text, f"missing: {marker}"
 
     ledger = Ledger(str(tmp_path / "ledger.db"))

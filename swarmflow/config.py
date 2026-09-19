@@ -56,6 +56,16 @@ DEFAULTS = {
         "enabled": True,
         "command": "",          # overrides recon's detected regression command
         "timeout_s": 900,
+        "shrink_tolerance": 0,  # tolerated decrease in executed tests
+        "strict": True,         # fail closed when results cannot be compared
+    },
+    "discrimination": {
+        "enabled": True,        # wave tests re-run against the parent state
+        "mode": "warn",         # warn (evidence) | enforce (fail the wave)
+        "link_dirs": ["node_modules"],
+        "timeout_s": 900,
+        "max_test_files": 20,
+        "skip_patterns": [],    # fnmatch; e.g. browser-e2e specs needing a live server
     },
     "git": {
         "branch_prefix": "swarmflow/",

@@ -110,7 +110,7 @@ def audit(project_root: str, ignores: list[str] | None = None) -> dict:
             {"kind": "no_baseline", "path": BASELINE_REL, "detail": "run freeze first"}]}
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     if baseline.get("mode") == "brownfield":
-        return _audit_brownfield(root, baseline)
+        return _audit_brownfield(root, baseline, ignores)
     frozen = baseline.get("files", {})
     owners = baseline.get("owners", {})
     effective = baseline.get("ignores") or (DEFAULT_IGNORES + list(ignores or []))
@@ -162,7 +162,11 @@ def _git_untracked(root: Path) -> list:
     return entries
 
 
-def _audit_brownfield(root: Path, baseline: dict) -> dict:
+def _ignored(rel: str, ignores: list | None) -> bool:
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in (ignores or []))
+
+
+def _audit_brownfield(root: Path, baseline: dict, ignores: list | None = None) -> dict:
     """Git-based audit: tracked hashes must match unless owned; untracked-unowned is
     a violation; gitignored files are invisible to both lists by construction."""
     ok, _ = _git(root, "rev-parse", "--is-inside-work-tree")
@@ -186,7 +190,7 @@ def _audit_brownfield(root: Path, baseline: dict) -> dict:
         except OSError:
             violations.append({"kind": "deleted_frozen", "path": rel})
     for rel in _git_untracked(root):
-        if rel in owners or rel in frozen:
+        if rel in owners or rel in frozen or _ignored(rel, ignores):
             continue
         if rel.split("/", 1)[0] in (".swarmflow", "logs", "state"):
             continue  # swarmflow's own artifacts, expected to be gitignored

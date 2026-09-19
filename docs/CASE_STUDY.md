@@ -37,13 +37,18 @@ strict testing bar.
 | Workers could not run tests; 90-100 turn thrash loops, 48-56 test invocations each | `NODE_ENV=production` in the environment made npm omit devDependencies; workers tried to "repair" the environment | installs use `--include=dev`; worker brief forbids installs; turn cap (45); exact `test_command` injection |
 | A worker deleted `node_modules` and modified frozen files during the thrash | panic behavior under a broken environment; no enforcement of the ownership envelope | forbidden-action scanner (rejects npm install / pnpm / node_modules deletion); frozen-file integrity + scope audit after every wave |
 | Frontier client crashed on prompts containing non-ASCII text | cp1252 stdin encoding | explicit UTF-8 everywhere |
-| Verifier flagged non-discriminating tests and missing e2e assertions | model-produced tests can be green without pinning behavior | recorded as open issues; verification prompts require discrimination evidence |
+| Verifier flagged non-discriminating tests and missing e2e assertions | model-produced tests can be green without pinning behavior | discrimination check: the wave's owned test files re-run at the run's base commit in a throwaway worktree, verdicts as evidence (`enforce` fails the wave); verification prompts also require discrimination evidence |
 
 ## Open items at the time of writing
 - No automated gate against a worker editing files it does not own (the audit catches
   it after the fact and fails the wave; prevention would need tool-level enforcement).
-- Some generated controller tests are non-discriminating; the verifier role is the
-  current mitigation.
+- Some generated controller tests are non-discriminating. Mechanized as the
+  discrimination check (`swarmflow/discrimination.py`): each wave's owned test files are
+  re-run at the run's `base_sha` in a throwaway git worktree and every file gets a
+  verdict (`fails_at_parent`, `passes_at_parent`, `error_at_parent`, `pre-existing`,
+  `deleted_in_wave`) recorded in the ledger and the evidence bundle; `enforce` mode
+  fails the wave. The verifier still judges intent (a `passes_at_parent` regression
+  guard for earlier-wave code is not automatically a defect).
 
 ## Brownfield validation run (2026-09-19)
 

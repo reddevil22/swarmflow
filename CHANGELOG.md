@@ -25,8 +25,32 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     for brownfield; broader forbidden-action scan (pip/poetry/uv/go get/cargo add).
   - `swarmflow evidence` bundle (recon, ledger, reports from traces, audit,
     regression, bounded diff of tests + manifests) for verifier/acceptance passes.
+- **Discrimination check** (brownfield, per wave): the wave's owned test files are
+  re-run at the run's `base_sha` in a throwaway git worktree - parent sources plus the
+  new tests, dependencies linked in. Each file gets a verdict (`fails_at_parent`,
+  `passes_at_parent`, `error_at_parent` for new modules the parent cannot import,
+  `preexisting_at_parent` against a red baseline, `deleted_in_wave`, `not_observed`),
+  recorded in the ledger, `evidence/wave<N>.discrimination.json` (raw run output
+  alongside) and a new `## Discrimination` evidence section. Default mode `warn`
+  (evidence only); `discrimination.mode: enforce` fails the wave on non-discriminating
+  or deleted tests. The live tree is never modified: linked directories are removed
+  before the worktree is deleted.
+- Parser: `parse_report` now separates run-level errors (pytest collection `ERROR`,
+  jest `Test suite failed to run`, compiler errors) from failure fingerprints.
+- Brownfield audit honors explicit ignore patterns, and the preflight records the
+  `.gitignore` it creates so a first run in a repo without one no longer fails the
+  scope audit on `added_unowned: .gitignore`.
 
 ### Changed
+- Regression gate compares failure **identity**, not counts: failing-test fingerprints
+  (pytest/jest/vitest/go/cargo summary lines plus embedded TS/mypy/eslint errors) and an
+  executed-test inventory. A red -> red run where a different test broke now fails the
+  gate; a suite that shrinks while staying green (`it.skip`, `#[ignore]`, deleted
+  specs) fails as `suite shrank`; uncomparable results fail closed by default
+  (`regression.strict`). Per-wave comparisons land in `evidence/wave<N>.compare.json`,
+  the `run.json` baseline no longer stores the raw output blob, and `wave-run` gains
+  `--rebaseline` and `--strict`; `evidence` reports known-failing tests and the latest
+  comparison.
 - Frontier access is backend-agnostic: `frontier.backend` selects `openai` (any
   OpenAI-compatible `/chat/completions` API via a stdlib-only client), `commandcode`,
   a generic `cli` adapter for any terminal agent CLI (argv template + text/JSON
