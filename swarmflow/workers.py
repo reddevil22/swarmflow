@@ -13,6 +13,10 @@ from pathlib import Path
 from .config import build_cli_command, resolve_executable
 
 
+class WaveAborted(Exception):
+    """Raised when wave preconditions are not met and nothing was dispatched."""
+
+
 def scan_trace(path: str, max_output_tokens: int = 32768) -> dict:
     """Analyze a Pi --mode json trace file. Returns a summary used for classification."""
     scan = {
@@ -265,7 +269,7 @@ class WorkerRunner:
                 not (self.project_root / "node_modules").exists():
             self.ledger.record_event(tasks[0]["id"], "wave-abort",
                                      "node_modules missing; refusing to dispatch")
-            return []
+            raise WaveAborted("node_modules missing; install dependencies first")
         self._wait_ready()
         results = []
         for start in range(0, len(tasks), concurrency):

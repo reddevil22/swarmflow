@@ -13,7 +13,8 @@ from .config import DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, REPO_ROOT, load_co
 from .frontier import FrontierError, build_backend
 from .ledger import Ledger
 from .plan import enqueue_plan, load_plan, scaffold, validate_plan
-from .workers import WorkerRunner, scan_trace
+from .regression import compare, run_regression
+from .workers import WaveAborted, WorkerRunner, scan_trace
 
 
 def _frontier(config) -> object:
@@ -163,6 +164,29 @@ def cmd_plan_load(args, config) -> int:
     return 0
 
 
+def _load_run_state(project_root: str) -> dict:
+    path = Path(project_root) / ".swarmflow" / "run.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+
+
+def _save_regression_baseline(project_root: str, baseline: dict) -> None:
+    path = Path(project_root) / ".swarmflow" / "run.json"
+    data = _load_run_state(project_root)
+    data.setdefault("regression", {})["baseline"] = baseline
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _recon_regression_command(project_root: str) -> str:
+    from .recon import load_recon
+    entry = ((load_recon(project_root).get("commands") or {}).get("regression") or {})
+    return entry.get("command", "")
+
+
 def cmd_wave_run(args, config) -> int:
     ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
     tasks = ledger.list_tasks(status="queued", wave=args.wave)
@@ -173,9 +197,43 @@ def cmd_wave_run(args, config) -> int:
             print(f"no queued tasks in wave {args.wave}")
         ledger.close()
         return 0
+    projects = {task["project"] for task in tasks}
+    if len(projects) > 1:
+        print(f"refusing to run a wave mixing projects: {sorted(projects)}")
+        ledger.close()
+        return 2
     project_root = tasks[0]["project"]
+    run_state = _load_run_state(project_root)
+    brownfield = run_state.get("mode") == "brownfield"
+    if brownfield:
+        owners = {task["id"]: task["owner_files"] for task in tasks}
+        info = freeze(project_root, owners, ignores=config["audit"]["ignore_extra"],
+                      mode="brownfield")
+        print(f"per-wave freeze: {info['frozen_files']} tracked file(s), "
+              f"{info['owned']} owned path(s)")
+    regression_enabled = bool(config["regression"].get("enabled", True)) \
+        and not args.skip_regression
+    regression_command = config["regression"].get("command") \
+        or _recon_regression_command(project_root)
+    baseline = (run_state.get("regression") or {}).get("baseline")
+    if regression_enabled and regression_command and baseline is None:
+        baseline = run_regression(
+            project_root, regression_command,
+            timeout_s=float(config["regression"]["timeout_s"]),
+            evidence_path=str(Path(project_root) / ".swarmflow" / "evidence" / "baseline.txt"))
+        _save_regression_baseline(project_root, baseline)
+        print(f"regression baseline recorded: rc={baseline.get('rc')} "
+              f"failures={baseline.get('failures')}")
+    elif regression_enabled and not regression_command:
+        print("regression gate skipped: no command detected (run `swarmflow recon` "
+              "or set regression.command)")
     runner = _runner(config, ledger, project_root)
-    results = runner.run_wave(args.wave, args.concurrency)
+    try:
+        results = runner.run_wave(args.wave, args.concurrency)
+    except WaveAborted as exc:
+        print(f"wave aborted: {exc}")
+        ledger.close()
+        return 1
     report = {"wave": args.wave, "results": []}
     failures = 0
     for result in results:
@@ -190,6 +248,23 @@ def cmd_wave_run(args, config) -> int:
         if not args.json:
             print(f"  {entry['task_id']:<20} {entry['outcome']:<18} status={status} "
                   f"turns={entry['turns']} out_tokens={entry['out_tokens']}")
+    if regression_enabled and regression_command:
+        current = run_regression(
+            project_root, regression_command,
+            timeout_s=float(config["regression"]["timeout_s"]),
+            evidence_path=str(Path(project_root) / ".swarmflow" / "evidence"
+                              / f"wave{args.wave}.txt"))
+        comparison = compare(baseline, current)
+        report["regression"] = comparison
+        if comparison["regressed"]:
+            failures += 1
+            reason = "; ".join(comparison["reasons"])
+            ledger.record_event(tasks[0]["id"], "regression", reason[:500])
+            print(f"REGRESSION DETECTED: {reason}")
+            print("  fix the regression before continuing (or --skip-regression at "
+                  "your own risk)")
+        elif baseline is not None:
+            print("regression gate: no new failures")
     report["ledger"] = ledger.counts()
     audit_state, audit_result = _run_audit(project_root, ledger, tasks[0]["id"],
                                            quiet=args.json,
@@ -249,7 +324,8 @@ def cmd_freeze(args, config) -> int:
         print(f"no tasks registered for {project_root}")
         return 2
     owners = {task["id"]: task["owner_files"] for task in tasks}
-    info = freeze(project_root, owners, ignores=config["audit"]["ignore_extra"])
+    info = freeze(project_root, owners, ignores=config["audit"]["ignore_extra"],
+                  mode=args.mode)
     if args.json:
         print(json.dumps(info))
     else:
@@ -313,6 +389,8 @@ def main(argv: list[str] | None = None) -> int:
     wave = sub.add_parser("wave-run", help="run one wave of queued tasks")
     wave.add_argument("--wave", type=int, default=1)
     wave.add_argument("--concurrency", type=int, default=None)
+    wave.add_argument("--skip-regression", action="store_true",
+                      help="do not run/compare the project regression suite")
     wave.add_argument("--json", action="store_true")
     wave.set_defaults(func=cmd_wave_run)
 
@@ -322,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
 
     freeze_p = sub.add_parser("freeze", help="snapshot the frozen baseline for a project")
     freeze_p.add_argument("--project", required=True)
+    freeze_p.add_argument("--mode", default="greenfield",
+                          choices=["greenfield", "brownfield"])
     freeze_p.add_argument("--json", action="store_true")
     freeze_p.set_defaults(func=cmd_freeze)
 
