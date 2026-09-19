@@ -1,0 +1,37 @@
+# Wave-4 fix plan: pin the invalid-done error contract, strengthen filter assertions.
+project_name: taskdock-mvp2
+project: C:\Users\redde\taskdock-pilot
+mode: brownfield
+tasks:
+  - id: filter-error-contract
+    module: src/infrastructure/http + test
+    owner_files:
+      - src/infrastructure/http/tasks.controller.ts
+      - test/filter.e2e-spec.ts
+    files_to_read:
+      - src/infrastructure/http/tasks.controller.ts
+      - src/infrastructure/http/domain-exception.filter.ts
+      - src/domain/errors.ts
+      - test/filter.e2e-spec.ts
+    thinking: medium
+    wave: 4
+    test_command: npx jest --config jest-e2e.json test/filter.e2e-spec.ts --silent
+    spec: |
+      1) The invalid `done` query value currently surfaces as Nest's default
+         BadRequestException body, which deviates from this repo's frozen error contract
+         ({ error: <DomainErrorName> }). Change the controller so an invalid `done`
+         value produces the SAME body shape as the domain filter does for other
+         validation errors: throw the domain validation error (TaskValidationError from
+         src/domain/errors.ts) with a clear message, and let the existing exception
+         filter map it. Verify by reading domain-exception.filter.ts first.
+      2) Pin the contract in test/filter.e2e-spec.ts:
+         - GET /tasks?done=1 and GET /tasks?done= (empty) each return 400 with body
+           exactly { error: "TaskValidationError" } style: assert the `error` key equals
+           the domain error name (import the class and use its .name).
+         - Case variants "TRUE" and "False" also return 400.
+         - Strengthen the no-query test: assert the response ids equal EXACTLY the ids
+           created by this test in insertion order (exclusivity + order), not just
+           presence.
+      3) Keep all other behavior unchanged; the full e2e suite must stay green.
+    acceptance:
+      - npx jest --config jest-e2e.json --silent passes (all e2e suites)

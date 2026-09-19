@@ -44,3 +44,37 @@ strict testing bar.
   it after the fact and fails the wave; prevention would need tool-level enforcement).
 - Some generated controller tests are non-discriminating; the verifier role is the
   current mitigation.
+
+## Brownfield validation run (2026-09-19)
+
+Second full validation, on an existing repository: `taskdock-pilot` (the MVP-1 above)
+received a brownfield delta on branch `swarmflow/taskdock-mvp2`, base `1b2748a65c`.
+
+Pipeline as executed: `recon` (digest embedded in the bundle) -> `mode: brownfield`
+plan (3 tasks, disjoint ownership) -> preflight (clean-tree check, `.swarmflow/`
+gitignored, run branch created, run.json with base_sha) -> wave 1 (done-filter +
+controller 400-test rewrite) -> wave 2 (bootstrap e2e) -> verifier round 1
+(`needs_fix`) -> wave 3 (filter HTTP tests + test hardening) -> verifier round 2
+(`needs_fix` on the error contract) -> wave 4 (invalid `done` -> TaskValidationError +
+assertion tightening) -> verifier round 3 (**pass**).
+
+Wall times: wave 1 5m07s, wave 2 55s, wave 3 2m33s, wave 4 1m04s; all six brownfield
+tasks delivered on attempt 1. Final state: 55 unit + 20 e2e tests green, external HTTP
+probe 7/7 (filter both directions, unchanged no-param order, invalid value -> 400
+`{error: "TaskValidationError"}`), git-based scope audit clean after every wave, and the
+unit+e2e regression gate green at every boundary (baseline recorded once per run).
+
+What the run caught (pipeline fixes applied):
+1. **Recon override loss**: plan-load's re-recon silently replaced a CLI-provided
+   regression command with the detected one, degrading the gate to unit-only. Fixed:
+   preflight preserves explicit overrides.
+2. **Orphaned servers**: workers left a `ts-node src/main.ts` listener on port 3000
+   twice; external probes then measured stale code and reported false failures.
+   Cleanup was manual. Roadmap: post-wave listener sweep / worker bash hygiene.
+3. **Verifier narrative confusion**: worker reports describing intermediate failures
+   caused two `needs_fix` rounds partly about bookkeeping. Fixed in the bundle: a
+   narrative disclaimer plus per-task spec embedding so spec-vs-delivery checks work.
+
+Roadmap from this run: unit-level `@Query('done')` test; generated e2e tests should
+avoid presence-only assertions; assert error message text where the contract includes
+it; post-wave orphan-process sweep.

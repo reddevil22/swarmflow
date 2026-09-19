@@ -49,6 +49,8 @@ def bundle(project_root: str, ledger) -> str:
              f"- mode: {state.get('mode', 'greenfield')}",
              f"- branch: {state.get('branch', '(none)')}",
              f"- base: {(state.get('base_sha') or '')[:10]}",
+             "- note: worker reports are agent narratives and may describe intermediate "
+             "failures; the Regression, Audit and Git diff sections reflect the final state",
              ""]
 
     lines.append("## Recon digest")
@@ -76,9 +78,15 @@ def bundle(project_root: str, ledger) -> str:
             lines.append(f"### {task['id']} (earlier run - report omitted)")
             lines.append("")
             continue
+        spec_path = task.get("spec_path")
+        if spec_path and Path(spec_path).exists():
+            spec_text = Path(spec_path).read_text(encoding="utf-8", errors="replace")
+            lines.append(f"### {task['id']} - spec (frozen)")
+            lines.append(spec_text[:1500])
+            lines.append("")
         scan = scan_trace(trace)
         text = (scan.get("last_text") or "(no final report found)")[:MAX_REPORT_CHARS]
-        lines.append(f"### {task['id']}")
+        lines.append(f"### {task['id']} - report")
         lines.append(text.strip())
         lines.append("")
 

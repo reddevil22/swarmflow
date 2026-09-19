@@ -1,0 +1,48 @@
+# Wave-3 fix plan from the TaskDock brownfield verifier findings.
+project_name: taskdock-mvp2
+project: C:\Users\redde\taskdock-pilot
+mode: brownfield
+tasks:
+  - id: filter-http-tests
+    module: test
+    owner_files:
+      - test/filter.e2e-spec.ts
+    files_to_read:
+      - test/app.e2e-spec.ts
+      - src/infrastructure/http/tasks.controller.ts
+    thinking: medium
+    wave: 3
+    test_command: npx jest --config jest-e2e.json test/filter.e2e-spec.ts --silent
+    spec: |
+      The ?done= filter has no HTTP-layer tests. Add test/filter.e2e-spec.ts (boot the
+      app the same way app.e2e-spec.ts does; never bind port 3000) covering:
+      1) GET /tasks with no query returns ALL tasks in insertion order.
+      2) GET /tasks?done=true returns only completed tasks.
+      3) GET /tasks?done=false returns only open tasks.
+      4) GET /tasks?done=1 (invalid) returns 400 and the body contains an `error` field
+         (do not assume more about the shape).
+      Create tasks through the HTTP API inside the test (POST + complete) so it is
+      self-contained. Do not modify other files.
+    acceptance:
+      - npx jest --config jest-e2e.json --silent passes (all e2e suites)
+  - id: test-hardening
+    module: spec + bootstrap e2e
+    owner_files:
+      - src/infrastructure/http/tasks.controller.spec.ts
+      - test/bootstrap.e2e-spec.ts
+    files_to_read:
+      - src/infrastructure/http/tasks.controller.spec.ts
+      - test/bootstrap.e2e-spec.ts
+    thinking: medium
+    wave: 3
+    test_command: npx jest src/infrastructure/http/tasks.controller.spec.ts --silent
+    spec: |
+      1) In src/infrastructure/http/tasks.controller.spec.ts, restore an exact
+         empty-string case: POST /tasks with title "" returns 400 (keep the existing
+         whitespace-only test as an additional case).
+      2) In test/bootstrap.e2e-spec.ts, strengthen assertions: the server address has a
+         non-zero ephemeral port, and a fresh server returns an EMPTY array (length 0)
+         from GET /tasks - pinning the empty-list contract instead of Array.isArray only.
+      Keep the afterAll cleanup; suites must exit cleanly.
+    acceptance:
+      - npx jest src --silent passes; all e2e suites pass
