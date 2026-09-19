@@ -30,3 +30,35 @@ not just code that exists.
 - 10 workers built 10 pinned modules + 263 tests in ~16 min wall, 0 conflicts,
   1 spiral failure (recovered), 1 uncovered edge case found by independent probing
 - per-worker: 13-28 turns, 6-27K output tokens, wall ~15-16 min under full load
+
+## Pilot run 1 - TaskDock (2026-09-19) - OUTCOMES
+
+Result: MVP-1 delivered and independently verified; PR-ready branch `feat/taskdock-mvp1`
+in `C:\Users\redde\taskdock-pilot` with `PR_BODY.md` and `evidence/`.
+
+Worked: frontier planner produced a clean disjoint 5-task plan with correct waves and
+thinking tiers; scaffold/ledger/dispatch mechanics; artifact-based auditing; final
+acceptance = tsc clean + 48 unit + 11 e2e + external HTTP probe 13/13 + verifier pass
+(deepseek found 1 major + 3 minor findings on top of our checks).
+
+Incidents (all found by this run; fixes applied):
+1. Process-level `NODE_ENV=production` made npm omit devDependencies, so jest/ts-jest were
+   missing and workers thrashed trying to "fix" the environment.
+   Fix: install with `--include=dev`; project `.npmrc` with `include=dev`.
+2. Worker thrash: 90-100 turn loops probing node_modules, pnpm confusion, 48-56 jest runs.
+   Fixes: hardened worker brief (npm-only, one jest run per cycle, never read node_modules,
+   BLOCKED protocol after 3 attempts, <=40 tool calls); supervisor turn cap (45).
+3. A worker deleted node_modules and modified frozen files under thrash (orchestrator
+   restored; npm ci --include=dev rebuilt).
+   Fixes: forbidden-action scanner (npm install/pnpm/rm -rf node_modules -> reject),
+   node_modules preflight before dispatch. Frozen-file integrity gate still MISSING.
+4. Frontier client crashed on non-ASCII prompts (cp1252 encode). Fixed: explicit UTF-8.
+
+Metrics: wave 1 = 2m19s (post-fix), wave 2 = 1m42s; T1-T4 attempts=4 each (3 lost to the
+environment/thrash era), T5 attempts=1; verifier call 25.8K in / 7.6K out tokens.
+
+Roadmap from this run:
+- frozen-file integrity gate (baseline hashes verified after every wave)
+- file-level scope audit (diff actual changes vs owner map)
+- inject the exact test command per task (no discovery by workers)
+- wire PR creation (gh) once a remote is configured
