@@ -79,6 +79,17 @@ def cmd_smoke_worker(args, config) -> int:
     return 0 if ok else 1
 
 
+def cmd_recon(args, config) -> int:
+    from .recon import digest, recon
+    override = args.regression_command or config["regression"].get("command") or ""
+    info = recon(args.project, regression_command=override)
+    if args.json:
+        print(json.dumps(info, indent=2))
+    else:
+        print(digest(info))
+    return 0
+
+
 def cmd_trace(args, config) -> int:
     scan = scan_trace(args.file, config["worker"]["max_output_tokens"])
     print(json.dumps(scan, indent=2)[:4000])
@@ -136,7 +147,8 @@ def cmd_wave_run(args, config) -> int:
                   f"turns={entry['turns']} out_tokens={entry['out_tokens']}")
     report["ledger"] = ledger.counts()
     audit_state, audit_result = _run_audit(project_root, ledger, tasks[0]["id"],
-                                           quiet=args.json)
+                                           quiet=args.json,
+                                           ignores=config["audit"]["ignore_extra"])
     report["audit"] = {"state": audit_state, "result": audit_result}
     ledger.close()
     if args.json:
@@ -162,9 +174,9 @@ def cmd_status(args, config) -> int:
 
 
 def _run_audit(project_root: str, ledger, task_id: str,
-               quiet: bool = False) -> tuple:
+               quiet: bool = False, ignores: list | None = None) -> tuple:
     """Run the scope audit after a wave. Returns (state, result-or-None)."""
-    result = audit(project_root)
+    result = audit(project_root, ignores=ignores)
     kinds = {violation["kind"] for violation in result["violations"]}
     if kinds == {"no_baseline"}:
         if not quiet:
@@ -192,7 +204,7 @@ def cmd_freeze(args, config) -> int:
         print(f"no tasks registered for {project_root}")
         return 2
     owners = {task["id"]: task["owner_files"] for task in tasks}
-    info = freeze(project_root, owners)
+    info = freeze(project_root, owners, ignores=config["audit"]["ignore_extra"])
     if args.json:
         print(json.dumps(info))
     else:
@@ -203,7 +215,7 @@ def cmd_freeze(args, config) -> int:
 
 def cmd_audit(args, config) -> int:
     project_root = str(Path(args.project).resolve())
-    result = audit(project_root)
+    result = audit(project_root, ignores=config["audit"]["ignore_extra"])
     kinds = {violation["kind"] for violation in result["violations"]}
     if args.json:
         print(json.dumps(result))
@@ -239,6 +251,12 @@ def main(argv: list[str] | None = None) -> int:
     trace = sub.add_parser("trace", help="analyze a session trace file")
     trace.add_argument("file")
     trace.set_defaults(func=cmd_trace)
+
+    recon_p = sub.add_parser("recon", help="survey an existing repository")
+    recon_p.add_argument("--project", required=True)
+    recon_p.add_argument("--regression-command", default="")
+    recon_p.add_argument("--json", action="store_true")
+    recon_p.set_defaults(func=cmd_recon)
 
     plan_load = sub.add_parser("plan-load", help="validate + scaffold + enqueue a plan")
     plan_load.add_argument("--plan", required=True)

@@ -62,3 +62,16 @@ swarm:
 paths:
   logs_dir: "logs"        # traces, relative to the target project root
   ledger: "state/ledger.db"
+
+audit:
+  # Extra ignore patterns for the greenfield (walk-based) audit. Brownfield runs
+  # use git itself (.gitignore) as the source of truth instead.
+  ignore_extra: []
+
+regression:
+  enabled: true           # run the project test suite at every wave boundary
+  command: ""             # overrides the recon-detected regression command
+  timeout_s: 900          # kill a hung/watch-mode suite instead of hanging wave-run
+
+git:
+  branch_prefix: "swarmflow/"   # brownfield run branches are <prefix><project_name>

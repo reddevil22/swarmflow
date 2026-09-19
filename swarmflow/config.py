@@ -49,6 +49,17 @@ DEFAULTS = {
         "logs_dir": "logs",
         "ledger": "state/ledger.db",
     },
+    "audit": {
+        "ignore_extra": [],
+    },
+    "regression": {
+        "enabled": True,
+        "command": "",          # overrides recon's detected regression command
+        "timeout_s": 900,
+    },
+    "git": {
+        "branch_prefix": "swarmflow/",
+    },
 }
 
 
