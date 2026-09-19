@@ -109,7 +109,8 @@ def cmd_trace(args, config) -> int:
 
 def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
     """Git-required preflight: clean tree, ignore entries, recon, branch, run.json."""
-    from .recon import branch_ensure, ensure_gitignore_entries, git_state, recon as run_recon
+    from .recon import (branch_ensure, ensure_gitignore_entries, git_state,
+                        load_recon, recon as run_recon)
     state = git_state(project_root)
     if not state.get("is_git"):
         print("brownfield mode requires a git repository; run `git init` first")
@@ -123,8 +124,14 @@ def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
     added = ensure_gitignore_entries(project_root, [".swarmflow/", "logs/"])
     if added:
         print(f"added to .gitignore: {', '.join(added)}")
+    # preserve a regression command provided via a previous recon override
+    preserved = ""
+    existing = load_recon(str(project_root))
+    existing_regression = ((existing.get("commands") or {}).get("regression") or {})
+    if existing_regression.get("evidence") == "config/CLI override":
+        preserved = existing_regression.get("command", "")
     run_recon(str(project_root),
-              regression_command=config["regression"].get("command") or "")
+              regression_command=config["regression"].get("command") or preserved)
     branch = config["git"]["branch_prefix"] + (plan.get("project_name") or "run")
     action = branch_ensure(str(project_root), branch)
     run_path = project_root / ".swarmflow" / "run.json"

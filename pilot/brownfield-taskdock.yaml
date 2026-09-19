@@ -1,0 +1,81 @@
+# Brownfield validation run: taskdock-mvp2 delta on an existing repo.
+project_name: taskdock-mvp2
+project: C:\Users\redde\taskdock-pilot
+mode: brownfield
+tasks:
+  - id: done-filter
+    module: src/application/use-cases + src/infrastructure/http
+    owner_files:
+      - src/application/use-cases/list-tasks.use-case.ts
+      - src/application/use-cases/list-tasks.use-case.spec.ts
+      - src/infrastructure/http/tasks.controller.ts
+    files_to_read:
+      - src/application/use-cases/list-tasks.use-case.ts
+      - src/infrastructure/http/tasks.controller.ts
+      - src/domain/task.ts
+      - src/application/ports/task-repository.port.ts
+    thinking: medium
+    wave: 1
+    test_command: npx jest src/application/use-cases/list-tasks.use-case.spec.ts --silent
+    spec: |
+      1) Extend the list-tasks use case so it accepts an optional filter { done?: boolean }.
+         When done is undefined the behavior is unchanged (all tasks, insertion order).
+         When done is true/false, return only tasks whose done flag matches.
+      2) The HTTP controller accepts an optional query parameter `done` on GET /tasks:
+         - absent: unchanged behavior
+         - exactly "true" or "false": filtered list, 200
+         - any other value: 400 with the existing error body shape { error: ... }
+         Implement that validation in the controller; use Nest's BadRequestException or
+         the existing exception mapping. Do not change use-case error semantics.
+      3) Do not change the task JSON shape, do not change the use case's no-filter
+         behavior, and keep src/infrastructure/http/tasks.controller.spec.ts (owned by
+         another task) passing as-is.
+      4) Update src/application/use-cases/list-tasks.use-case.spec.ts: add tests that
+         fail against the current implementation for done=true, done=false, an empty
+         filtered result, and no-filter ordering preserved.
+    acceptance:
+      - npx jest src --silent passes (full unit suite)
+      - GET /tasks?done=true returns only completed tasks (integration probe)
+  - id: controller-400-tests
+    module: src/infrastructure/http spec
+    owner_files:
+      - src/infrastructure/http/tasks.controller.spec.ts
+    files_to_read:
+      - src/infrastructure/http/tasks.controller.spec.ts
+      - src/infrastructure/http/tasks.controller.ts
+    thinking: medium
+    wave: 1
+    test_command: npx jest src/infrastructure/http/tasks.controller.spec.ts --silent
+    spec: |
+      The two 400-case create tests currently use a mock use case that throws
+      unconditionally, so they would pass even if the controller never validated or the
+      status mapping were wrong. Rewrite them to be discriminating:
+      1) Use a stub CreateTaskUseCase that succeeds for valid titles and throws the
+         domain validation error exactly for invalid ones (blank after trim, length>120).
+      2) Assert both branches: a valid title returns 201 with done=false; a blank title
+         and a 121-character title return 400 with { error: <DomainErrorName> }.
+      3) Keep the rest of the existing spec assertions intact. Do not modify controller
+         source (owned by another task).
+    acceptance:
+      - npx jest src/infrastructure/http/tasks.controller.spec.ts --silent passes
+  - id: bootstrap-test
+    module: test
+    owner_files:
+      - test/bootstrap.e2e-spec.ts
+    files_to_read:
+      - src/main.ts
+      - test/app.e2e-spec.ts
+    thinking: medium
+    wave: 2
+    test_command: npx jest --config jest-e2e.json test/bootstrap.e2e-spec.ts --silent
+    spec: |
+      src/main.ts has no test coverage. Add test/bootstrap.e2e-spec.ts that:
+      1) Imports the app factory from src/main.ts (read it first; if main.ts only
+         listens at module scope, start the app via the exported module/factory instead
+         and assert the same properties).
+      2) Starts the application on an ephemeral port (0) so tests never bind 3000.
+      3) Asserts the server is listening and GET /tasks returns 200 with a JSON array.
+      4) Closes the application in afterAll; the suite must exit cleanly.
+      Do not modify src/main.ts.
+    acceptance:
+      - npx jest --config jest-e2e.json --silent passes (all e2e tests)

@@ -89,6 +89,24 @@ def test_scaffold_brownfield_never_touches_user_files(tmp_path):
 
 
 @pytest.mark.skipif(not GIT, reason="git not available")
+def test_preflight_preserves_recon_regression_override(tmp_path):
+    project = tmp_path / "repo"
+    project.mkdir()
+    _init_repo(project)
+    (project / ".swarmflow").mkdir()
+    (project / ".swarmflow" / "recon.json").write_text(json.dumps({
+        "commands": {"regression": {"command": "custom-cmd",
+                                    "evidence": "config/CLI override"}},
+    }), encoding="utf-8")
+    plan_path = _write_plan(tmp_path, project)
+    config_path = _write_config(tmp_path)
+
+    assert cli.main(["--config", str(config_path), "plan-load", "--plan", str(plan_path)]) == 0
+    recon = json.loads((project / ".swarmflow" / "recon.json").read_text(encoding="utf-8"))
+    assert recon["commands"]["regression"]["command"] == "custom-cmd"
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
 def test_brownfield_plan_load_end_to_end(tmp_path):
     project = tmp_path / "repo"
     project.mkdir()
