@@ -5,6 +5,7 @@ import json
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from .audit import audit, freeze
@@ -96,6 +97,45 @@ def cmd_trace(args, config) -> int:
     return 0
 
 
+def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
+    """Git-required preflight: clean tree, ignore entries, recon, branch, run.json."""
+    from .recon import branch_ensure, ensure_gitignore_entries, git_state, recon as run_recon
+    state = git_state(project_root)
+    if not state.get("is_git"):
+        print("brownfield mode requires a git repository; run `git init` first")
+        return 2
+    if state.get("dirty_tracked") and not args.allow_dirty:
+        print("working tree has modified tracked files; commit or stash them first "
+              "(or pass --allow-dirty):")
+        for line in (state["dirty_tracked"] or [])[:10]:
+            print(f"  {line}")
+        return 2
+    added = ensure_gitignore_entries(project_root, [".swarmflow/", "logs/"])
+    if added:
+        print(f"added to .gitignore: {', '.join(added)}")
+    run_recon(str(project_root),
+              regression_command=config["regression"].get("command") or "")
+    branch = config["git"]["branch_prefix"] + (plan.get("project_name") or "run")
+    action = branch_ensure(str(project_root), branch)
+    run_path = project_root / ".swarmflow" / "run.json"
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    if run_path.exists():
+        try:
+            data = json.loads(run_path.read_text(encoding="utf-8"))
+        except ValueError:
+            data = {}
+        data["updated_at"] = now
+        run_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    else:
+        data = {"plan_path": str(Path(args.plan).resolve()), "mode": "brownfield",
+                "branch": branch, "base_sha": state.get("head", ""),
+                "created_at": now, "updated_at": now}
+        run_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    print(f"brownfield preflight ok: branch {branch} ({action}), "
+          f"base {str(state.get('head') or '')[:10]}, recon written")
+    return 0
+
+
 def cmd_plan_load(args, config) -> int:
     plan = load_plan(args.plan)
     errors = validate_plan(plan)
@@ -109,11 +149,16 @@ def cmd_plan_load(args, config) -> int:
         print("no project root given (use --project or project: in the plan)")
         return 2
     project_root = Path(raw_root).resolve()
-    info = scaffold(plan, project_root, REPO_ROOT)
+    mode = plan.get("mode", "greenfield")
+    if mode == "brownfield":
+        rc = _brownfield_preflight(plan, project_root, args, config)
+        if rc:
+            return rc
+    info = scaffold(plan, project_root, REPO_ROOT, mode=mode)
     ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
     counts = enqueue_plan(ledger, plan, project_root, info["spec_paths"])
     ledger.close()
-    print(f"scaffolded {project_root} (git: {info['git']}); enqueued "
+    print(f"[{mode}] scaffolded {project_root} (git: {info['git']}); enqueued "
           f"{counts['inserted']}/{counts['total']} tasks")
     return 0
 
@@ -261,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
     plan_load = sub.add_parser("plan-load", help="validate + scaffold + enqueue a plan")
     plan_load.add_argument("--plan", required=True)
     plan_load.add_argument("--project", default=None)
+    plan_load.add_argument("--allow-dirty", action="store_true",
+                           help="brownfield: allow modified tracked files")
     plan_load.set_defaults(func=cmd_plan_load)
 
     wave = sub.add_parser("wave-run", help="run one wave of queued tasks")

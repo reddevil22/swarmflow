@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     acceptance TEXT,
     spec_path TEXT,
     test_command TEXT DEFAULT '',
+    files_to_read TEXT,
     status TEXT NOT NULL DEFAULT 'queued',
     attempts INTEGER NOT NULL DEFAULT 0,
     thinking TEXT NOT NULL DEFAULT 'high',
@@ -66,6 +67,10 @@ class Ledger:
             self.conn.execute("ALTER TABLE tasks ADD COLUMN test_command TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # column already exists
+        try:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN files_to_read TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         self.conn.commit()
 
     def close(self) -> None:
@@ -74,15 +79,17 @@ class Ledger:
     def add_task(self, task_id: str, project: str, wave: int = 1, module: str = "",
                  owner_files: list | None = None, acceptance: list | None = None,
                  spec_path: str = "", thinking: str = "high",
-                 test_command: str = "") -> bool:
+                 test_command: str = "", files_to_read: list | None = None) -> bool:
         """Insert a task if it does not exist. Returns True when inserted."""
         now = _now()
         cur = self.conn.execute(
             "INSERT OR IGNORE INTO tasks (id, project, wave, module, owner_files, acceptance,"
-            " spec_path, test_command, status, attempts, thinking, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)",
+            " spec_path, test_command, files_to_read, status, attempts, thinking,"
+            " created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)",
             (task_id, project, wave, module, json.dumps(owner_files or []),
-             json.dumps(acceptance or []), spec_path, test_command, thinking, now, now),
+             json.dumps(acceptance or []), spec_path, test_command,
+             json.dumps(files_to_read or []), thinking, now, now),
         )
         self.conn.commit()
         if cur.rowcount:
@@ -163,7 +170,7 @@ class Ledger:
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict:
         task = dict(row)
-        for key in ("owner_files", "acceptance", "artifacts"):
+        for key in ("owner_files", "acceptance", "artifacts", "files_to_read"):
             if task.get(key):
                 try:
                     task[key] = json.loads(task[key])

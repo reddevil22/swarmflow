@@ -286,3 +286,14 @@ def ensure_gitignore_entries(project_root, entries: list) -> list:
             for entry in added:
                 handle.write(entry + "\n")
     return added
+
+
+def branch_ensure(project_root, branch: str) -> str:
+    """Check out `branch`, creating it if needed. Returns 'created' or 'reused'."""
+    root = Path(project_root)
+    ok, _ = _git(root, "rev-parse", "--verify", branch)
+    if ok:
+        _git(root, "checkout", branch)
+        return "reused"
+    _git(root, "checkout", "-b", branch)
+    return "created"

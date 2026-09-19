@@ -16,6 +16,9 @@ def load_plan(path: str) -> dict:
 def validate_plan(plan: dict) -> list[str]:
     """Return a list of problems; empty list means the plan is usable."""
     errors = []
+    mode = plan.get("mode", "greenfield")
+    if mode not in ("greenfield", "brownfield"):
+        return [f"mode must be 'greenfield' or 'brownfield', got {mode!r}"]
     tasks = plan.get("tasks")
     if not tasks:
         return ["plan has no tasks"]
@@ -32,6 +35,11 @@ def validate_plan(plan: dict) -> list[str]:
         seen_ids.add(task_id)
         if "test_command" in task and not isinstance(task["test_command"], str):
             errors.append(f"{task_id}: test_command must be a string")
+        files_to_read = task.get("files_to_read")
+        if files_to_read is not None and (
+                not isinstance(files_to_read, list)
+                or not all(isinstance(item, str) for item in files_to_read)):
+            errors.append(f"{task_id}: files_to_read must be a list of strings")
         owners = task.get("owner_files") or []
         if not owners:
             errors.append(f"{task_id}: owner_files is empty (shared files belong to integration)")
@@ -44,9 +52,8 @@ def validate_plan(plan: dict) -> list[str]:
     return errors
 
 
-def write_specs(plan: dict, project_root: Path) -> dict:
-    """Write each task's spec text to <project>/specs/<id>.md. Returns id -> path."""
-    specs_dir = project_root / "specs"
+def write_specs(plan: dict, specs_dir: Path) -> dict:
+    """Write each task's spec text to <specs_dir>/<id>.md. Returns id -> path."""
     specs_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
     for task in plan.get("tasks", []):
@@ -84,26 +91,42 @@ def render_spec_md(plan: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def scaffold(plan: dict, project_root: Path, repo_root: Path) -> dict:
-    """Create the project skeleton: AGENTS.md, SPEC.md, spec files, dirs, git."""
+def scaffold(plan: dict, project_root: Path, repo_root: Path,
+             mode: str = "greenfield") -> dict:
+    """Create the project skeleton for the given mode.
+
+    greenfield: owns the repo - writes AGENTS.md, root SPEC.md, specs/, git-inits.
+    brownfield: never touches user files - artifacts live under `.swarmflow/`,
+    no AGENTS.md copy, no git init.
+    """
     project_root.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(repo_root / "AGENTS.worker.md", project_root / "AGENTS.md")
-    (project_root / "SPEC.md").write_text(render_spec_md(plan), encoding="utf-8")
-    spec_paths = write_specs(plan, project_root)
+    artifacts_dir = ""
+    if mode == "brownfield":
+        artifacts = project_root / ".swarmflow"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        artifacts_dir = str(artifacts)
+        spec_md = artifacts / "SPEC.md"
+        spec_paths = write_specs(plan, artifacts / "specs")
+        git_info = "existing" if (project_root / ".git").exists() else "missing"
+    else:
+        shutil.copyfile(repo_root / "AGENTS.worker.md", project_root / "AGENTS.md")
+        spec_md = project_root / "SPEC.md"
+        spec_paths = write_specs(plan, project_root / "specs")
+        git_info = "existing"
+        if not (project_root / ".git").exists():
+            try:
+                subprocess.run(["git", "init"], cwd=project_root, capture_output=True,
+                               text=True, check=True)
+                git_info = "initialized"
+            except (OSError, subprocess.CalledProcessError):
+                git_info = "unavailable"
+    spec_md.write_text(render_spec_md(plan), encoding="utf-8")
     for task in plan.get("tasks", []):
         for file_name in task.get("owner_files", []):
             parent = (project_root / file_name).parent
             if parent and not parent.exists():
                 parent.mkdir(parents=True, exist_ok=True)
-    git_info = "existing"
-    if not (project_root / ".git").exists():
-        try:
-            subprocess.run(["git", "init"], cwd=project_root, capture_output=True,
-                           text=True, check=True)
-            git_info = "initialized"
-        except (OSError, subprocess.CalledProcessError):
-            git_info = "unavailable"
-    return {"spec_paths": spec_paths, "git": git_info}
+    return {"spec_paths": spec_paths, "git": git_info, "artifacts_dir": artifacts_dir}
 
 
 def enqueue_plan(ledger, plan: dict, project_root: Path, spec_paths: dict) -> dict:
@@ -119,6 +142,7 @@ def enqueue_plan(ledger, plan: dict, project_root: Path, spec_paths: dict) -> di
             spec_path=spec_paths.get(task["id"], ""),
             thinking=task.get("thinking", "high"),
             test_command=task.get("test_command", ""),
+            files_to_read=task.get("files_to_read", []),
         ):
             inserted += 1
     return {"inserted": inserted, "total": len(plan.get("tasks", []))}
