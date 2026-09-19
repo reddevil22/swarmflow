@@ -1,0 +1,121 @@
+"""Plan loading, validation, scaffolding and enqueueing."""
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import yaml
+
+REQUIRED_TASK_KEYS = {"id", "module", "owner_files"}
+
+
+def load_plan(path: str) -> dict:
+    return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+
+
+def validate_plan(plan: dict) -> list[str]:
+    """Return a list of problems; empty list means the plan is usable."""
+    errors = []
+    tasks = plan.get("tasks")
+    if not tasks:
+        return ["plan has no tasks"]
+    seen_ids = set()
+    owner_map: dict[str, str] = {}
+    for task in tasks:
+        task_id = task.get("id", "<missing id>")
+        missing = REQUIRED_TASK_KEYS - set(task)
+        if missing:
+            errors.append(f"{task_id}: missing keys {sorted(missing)}")
+            continue
+        if task_id in seen_ids:
+            errors.append(f"{task_id}: duplicate id")
+        seen_ids.add(task_id)
+        owners = task.get("owner_files") or []
+        if not owners:
+            errors.append(f"{task_id}: owner_files is empty (shared files belong to integration)")
+        for file_name in owners:
+            if file_name in owner_map and owner_map[file_name] != task_id:
+                errors.append(
+                    f"ownership overlap: {file_name} claimed by {owner_map[file_name]} and {task_id}"
+                )
+            owner_map[file_name] = task_id
+    return errors
+
+
+def write_specs(plan: dict, project_root: Path) -> dict:
+    """Write each task's spec text to <project>/specs/<id>.md. Returns id -> path."""
+    specs_dir = project_root / "specs"
+    specs_dir.mkdir(parents=True, exist_ok=True)
+    paths = {}
+    for task in plan.get("tasks", []):
+        path = specs_dir / f"{task['id']}.md"
+        text = task.get("spec") or "(no spec text provided)"
+        path.write_text(f"# Task {task['id']}\n\n{text}\n", encoding="utf-8")
+        paths[task["id"]] = str(path)
+    return paths
+
+
+def render_spec_md(plan: dict) -> str:
+    lines = [f"# {plan.get('project_name', 'project')} - SPEC", ""]
+    scope = plan.get("mvp_scope") or {}
+    if scope:
+        lines.append("## MVP-1 scope")
+        lines += [f"- in: {item}" for item in scope.get("in", [])]
+        lines += [f"- out: {item}" for item in scope.get("out", [])]
+        lines.append("")
+    contracts = plan.get("contracts") or []
+    if contracts:
+        lines.append("## Interfaces (frozen)")
+        for contract in contracts:
+            lines.append(f"### {contract.get('name', '?')}")
+            lines.append(contract.get("definition", ""))
+        lines.append("")
+    lines.append("## Tasks")
+    for task in plan.get("tasks", []):
+        lines.append(f"- **{task['id']}** ({task.get('module')}) -> files: {', '.join(task.get('owner_files', []))}")
+        for check in task.get("acceptance") or []:
+            lines.append(f"    - acceptance: {check}")
+    lines.append("")
+    lines.append("## Acceptance criteria (MVP-1)")
+    for criterion in plan.get("acceptance_criteria") or []:
+        lines.append(f"- {criterion.get('id')}: {criterion.get('criterion')} [{criterion.get('check')}]")
+    return "\n".join(lines) + "\n"
+
+
+def scaffold(plan: dict, project_root: Path, repo_root: Path) -> dict:
+    """Create the project skeleton: AGENTS.md, SPEC.md, spec files, dirs, git."""
+    project_root.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(repo_root / "AGENTS.worker.md", project_root / "AGENTS.md")
+    (project_root / "SPEC.md").write_text(render_spec_md(plan), encoding="utf-8")
+    spec_paths = write_specs(plan, project_root)
+    for task in plan.get("tasks", []):
+        for file_name in task.get("owner_files", []):
+            parent = (project_root / file_name).parent
+            if parent and not parent.exists():
+                parent.mkdir(parents=True, exist_ok=True)
+    git_info = "existing"
+    if not (project_root / ".git").exists():
+        try:
+            subprocess.run(["git", "init"], cwd=project_root, capture_output=True,
+                           text=True, check=True)
+            git_info = "initialized"
+        except (OSError, subprocess.CalledProcessError):
+            git_info = "unavailable"
+    return {"spec_paths": spec_paths, "git": git_info}
+
+
+def enqueue_plan(ledger, plan: dict, project_root: Path, spec_paths: dict) -> dict:
+    inserted = 0
+    for task in plan.get("tasks", []):
+        if ledger.add_task(
+            task_id=task["id"],
+            project=str(project_root),
+            wave=int(task.get("wave", 1)),
+            module=task.get("module", ""),
+            owner_files=task.get("owner_files", []),
+            acceptance=task.get("acceptance", []),
+            spec_path=spec_paths.get(task["id"], ""),
+            thinking=task.get("thinking", "high"),
+        ):
+            inserted += 1
+    return {"inserted": inserted, "total": len(plan.get("tasks", []))}
