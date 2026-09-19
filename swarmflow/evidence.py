@@ -60,12 +60,21 @@ def bundle(project_root: str, ledger) -> str:
         verdict = (task.get("verdict") or "")[:200]
         lines.append(f"- **{task['id']}** wave={task['wave']} status={task['status']} "
                      f"attempts={task['attempts']} verdict={verdict}")
+        if task.get("spec_path"):
+            lines.append(f"  - spec: {task['spec_path']}")
+        if task.get("acceptance"):
+            lines.append(f"  - acceptance: {'; '.join(task['acceptance'])}")
     lines.append("")
 
     lines.append("## Worker reports")
+    run_started = state.get("created_at", "")
     for task in ledger.list_tasks():
         trace = task.get("worker_trace")
         if not trace:
+            continue
+        if run_started and (task.get("created_at") or "") < run_started:
+            lines.append(f"### {task['id']} (earlier run - report omitted)")
+            lines.append("")
             continue
         scan = scan_trace(trace)
         text = (scan.get("last_text") or "(no final report found)")[:MAX_REPORT_CHARS]
@@ -76,6 +85,8 @@ def bundle(project_root: str, ledger) -> str:
     lines.append("## Audit")
     result = audit(str(root))
     lines.append(f"- ok: {result['ok']}")
+    lines.append("- note: .gitignore additions (.swarmflow/, logs/) are made by the "
+                 "brownfield preflight, before the first freeze")
     for violation in result.get("violations", [])[:50]:
         lines.append(f"- {violation['kind']}: {violation['path']}")
     lines.append("")
@@ -91,6 +102,13 @@ def bundle(project_root: str, ledger) -> str:
     evidence_dir = root / ".swarmflow" / "evidence"
     for path in sorted(evidence_dir.glob("*.txt")):
         lines.append(f"- evidence file: {path.relative_to(root)}")
+    wave_files = sorted(evidence_dir.glob("wave*.txt"))
+    if wave_files:
+        tail = wave_files[-1].read_text(encoding="utf-8", errors="replace")[-2000:]
+        lines.append(f"- latest regression evidence ({wave_files[-1].name}) tail:")
+        lines.append("```")
+        lines.append(tail)
+        lines.append("```")
     lines.append("")
 
     lines.append("## Git diff vs base")

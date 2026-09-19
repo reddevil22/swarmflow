@@ -69,9 +69,13 @@ def test_bundle_contains_all_sections(tmp_path):
                                                "text": "REPORT CHANGES here"}]}]}) + "\n")
 
     ledger = Ledger(str(tmp_path / "ledger.db"))
-    ledger.add_task("T1", str(repo), wave=1, owner_files=["app.py"])
+    ledger.add_task("T1", str(repo), wave=1, owner_files=["app.py"],
+                    acceptance=["the probe passes"])
     ledger.set_status("T1", "delivered", worker_trace=str(trace), verdict="{}")
     ledger.close()
+    (repo / ".swarmflow" / "evidence").mkdir()
+    (repo / ".swarmflow" / "evidence" / "wave1.txt").write_text(
+        "$ cmd\n(rc=0)\nFINAL-TAIL-MARKER\n", encoding="utf-8")
 
     # a change on a sensitive path (test file)
     (repo / "tests" / "test_app.py").write_text("def test_ok():\n    assert 1\n",
@@ -82,8 +86,9 @@ def test_bundle_contains_all_sections(tmp_path):
     ledger.close()
 
     for marker in ["# Evidence bundle", "## Recon digest", "## Tasks", "T1",
+                   "acceptance: the probe passes",
                    "## Worker reports", "REPORT CHANGES", "## Audit", "## Regression",
-                   "python -m pytest -q", "## Git diff vs base",
+                   "python -m pytest -q", "FINAL-TAIL-MARKER", "## Git diff vs base",
                    "### Sensitive paths diff", "test_app.py"]:
         assert marker in text, f"missing: {marker}"
 
