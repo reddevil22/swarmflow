@@ -1,7 +1,10 @@
 # swarmflow configuration example
 # Copy to config/swarmflow.yaml (or run `swarmflow init`) and edit for your machine.
 # Values support ${ENV_VAR} expansion; local edits to config/swarmflow.yaml are
-# untracked by git.
+# untracked by git. An alternative config path can be given with --config or the
+# SWARMFLOW_CONFIG environment variable.
+# Note: model ids, thinking levels and .cmd/.bat executable paths are validated at
+# load time (no shell metacharacters; cmd.exe-routed paths may not contain spaces).
 
 frontier:
   # Backend used for planning / verification / acceptance.
@@ -30,11 +33,11 @@ frontier:
   # --- pi backend -----------------------------------------------------------
   pi_cli: ""                # leave empty to auto-detect `pi` on PATH
   node: "node"
-  thinking: ""
+  thinking: ""              # pi backend only; one of off|minimal|low|medium|high|xhigh|max
 
   # --- common ----------------------------------------------------------------
   model: "deepseek/deepseek-v4-flash"   # model id for the chosen backend
-  effort: null            # null | low | high | max (where supported)
+  effort: null            # commandcode backend only: null | low | high | max
   timeout_s: 300
 
 worker:
@@ -44,9 +47,9 @@ worker:
   pi_cli: ""
   node: "node"
   # Model id exactly as configured in Pi (see ~/.pi/agent/models.json),
-  # e.g. "mybox/qwen3.6-35b-a3b"
+  # e.g. "mybox/qwen3.6-35b-a3b". Per-task thinking levels come from the plan;
+  # retry_thinking is used when a worker is retried after a reasoning spiral.
   model: ""
-  thinking: "high"
   retry_thinking: "medium"
   timeout_s: 2400         # per-session wall clock limit (seconds)
   max_turns: 45           # supervisor kills workers above this turn count

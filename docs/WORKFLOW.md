@@ -34,26 +34,28 @@ Per wave boundary:
 2. discrimination check: the wave's owned test files re-run at the run's base commit in
    a throwaway worktree (`evidence/wave<N>.discrimination.json`; `enforce` mode fails
    the wave, `warn` records evidence)
-3. requirement->test traceability matrix parsed from worker reports
+3. requirement->test traceability matrix parsed from worker reports (roadmap - not
+   implemented yet)
 4. verifier pass (frontier) over specs vs. delivered artifacts; findings become fix tasks
+   (**operator-run today**: `prompts/verifier.md` has no CLI command wiring it in yet)
 5. new tasks (fixes/retries) are appended to the current or next wave
 
 ## Stage 5 - Integrate
 - integration session(s) own shared files (`__init__`, CLI wiring, package config)
 - end-to-end demo command runs green; its transcript is kept as evidence
 
-## Stage 6 - PR gate (HUMAN CHECKPOINT)
-- control plane creates a branch, commits the wave, and opens a pull request
-  (gh CLI); PR body includes: summary, evidence bundle links, open issues, demo output
-- task statuses -> `awaiting_pr_review`; pipeline pauses
-- human merges (or requests changes -> new fix tasks)
-- `swarmflow wave run --continue` resumes after merge
+## Stage 6 - Human review (HUMAN CHECKPOINT)
+- the control plane leaves the work on the run branch (`swarmflow/<name>`) with an
+  evidence bundle (`swarmflow evidence --project P`)
+- **no PR automation exists**: there is no `gh` integration, no `awaiting_pr_review`
+  transition and no `--continue` flag. The human reviews the branch and merges it by
+  hand; requested changes become new fix tasks (roadmap: PR gate + pipeline resume).
 
-## Stage 7 - Package (deployable artifact)
-- build the artifact (wheel/binary/container per project type), run the packaged
-  artifact's smoke test, attach build outputs + checksums to the evidence bundle
-- acceptance (frontier) maps every frozen acceptance criterion to evidence;
-  gaps become the MVP-2 backlog
+## Stage 7 - Package (deployable artifact) - roadmap, not implemented
+- planned: build the artifact (wheel/binary/container per project type), run the
+  packaged artifact's smoke test, attach build outputs + checksums to the evidence bundle
+- planned: acceptance (frontier) maps every frozen acceptance criterion to evidence;
+  gaps become the MVP-2 backlog. Today `prompts/acceptance.md` is operator-run.
 
 ## Brownfield runs (existing repositories)
 
@@ -95,17 +97,26 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    tests + manifests) for the verifier/acceptance passes.
 6. **Human review** on the run branch. No PR automation.
 
-## Evidence bundle (per run)
+## Evidence (per run, actually written today)
 ```
-evidence/
-  requirements.md            frozen scope + acceptance criteria
-  plan.yaml                  tasks, ownership, acceptance per task
-  reports/<task>.md          worker reports (5 required sections)
-  traces/<task>*.jsonl       raw session traces (incl. failed attempts)
-  verification.md            regression results, traceability matrix, verifier findings
-  demo.txt                   end-to-end demo transcript
-  acceptance.md              criterion -> evidence mapping + verdict
+<project>/.swarmflow/
+  SPEC.md                    frozen scope + acceptance criteria
+  specs/<task>.md            the spec text handed to each worker
+  recon.json                 reconnaissance digest (stacks, commands, tests, git state)
+  evidence/
+    bundle.md                assembled bundle (recon, ledger, reports, audit, regression,
+                             discrimination, processes, bounded diff) for the verifier
+    baseline.txt             regression baseline run output
+    wave<N>.txt              regression run output for wave N
+    wave<N>.compare.json     fingerprint comparison (new/fixed failures, suite delta)
+    wave<N>.discrimination.json  per-file parent-state verdicts
+    wave<N>.discrimination.parent<K>.txt  raw output of each parent-state run
+    wave<N>.sweep.json       post-wave process sweep (orphans, pre-existing, killed)
+  logs/<task>_a<N>.jsonl     raw session traces
+<state_dir>/runs/<hash>/     control-plane state store: run.json + frozen.json
 ```
+The verifier/acceptance prompts read `evidence/bundle.md`; they are operator-run today
+(there is no `swarmflow verify`/`accept` command yet).
 
 ## Rules that are non-negotiable (from experiments)
 - artifact-based progress; exit codes are advisory only

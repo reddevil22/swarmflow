@@ -20,7 +20,8 @@ def test_partial_config_merges_with_defaults(tmp_path):
     partial.write_text("worker:\n  model: local/test\n", encoding="utf-8")
     config = load_config(str(partial))
     assert config["worker"]["model"] == "local/test"
-    assert config["worker"]["thinking"] == "high"      # default preserved
+    assert config["worker"]["retry_thinking"] == "medium"   # default preserved
+    assert config["worker"]["poll_s"] == 15.0               # supervisor defaults present
     assert config["swarm"]["concurrency"] == 8
 
 

@@ -51,8 +51,9 @@ strict testing bar.
 - Some generated controller tests are non-discriminating. Mechanized as the
   discrimination check (`swarmflow/discrimination.py`): each wave's owned test files are
   re-run at the run's `base_sha` in a throwaway git worktree and every file gets a
-  verdict (`fails_at_parent`, `passes_at_parent`, `error_at_parent`, `pre-existing`,
-  `deleted_in_wave`) recorded in the ledger and the evidence bundle; `enforce` mode
+  verdict (`fails_at_parent`, `passes_at_parent`, `error_at_parent`,
+  `preexisting_at_parent`, `deleted_in_wave`, `not_observed`, `indeterminate`)
+  recorded in the ledger and the evidence bundle; `enforce` mode
   fails the wave. The verifier still judges intent (a `passes_at_parent` regression
   guard for earlier-wave code is not automatically a defect).
 

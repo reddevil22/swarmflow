@@ -59,3 +59,20 @@ def test_bump_attempts(tmp_path):
     assert ledger.bump_attempts("t1") == 2
     assert ledger.get("t1")["attempts"] == 2
     ledger.close()
+
+
+def test_set_status_on_unknown_task_records_an_orphan_event(tmp_path):
+    ledger = Ledger(str(tmp_path / "l.db"))
+    ledger.set_status("ghost", "delivered")
+    assert ledger.get("ghost") is None
+    kinds = [event["kind"] for event in ledger.events("ghost")]
+    assert "status:delivered" in kinds
+    ledger.close()
+
+
+def test_ledger_is_a_context_manager(tmp_path):
+    with Ledger(str(tmp_path / "l.db")) as ledger:
+        ledger.add_task("t1", "p")
+    # the connection is closed; reopening the file proves the handle was released
+    with Ledger(str(tmp_path / "l.db")) as reopened:
+        assert reopened.get("t1")["id"] == "t1"

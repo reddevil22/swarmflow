@@ -1,5 +1,9 @@
 # Acceptance prompt (frontier: deepseek-v4-flash)
 
+> Operator-run today: no CLI command wires this prompt in yet. Paste it plus the frozen
+> acceptance criteria and `evidence/bundle.md` into the configured frontier backend by
+> hand. (Roadmap: a `swarmflow accept` command.)
+
 You are the acceptance stage. You receive the frozen MVP-1 acceptance criteria and the
 evidence bundle (test results, demo transcript, artifact manifest, verifier verdicts).
 Map each criterion to evidence and give a final verdict. Respond with ONLY a JSON object.

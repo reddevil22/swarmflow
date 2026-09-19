@@ -8,18 +8,19 @@ agents. Respond with ONLY a JSON object - no markdown fences, no commentary.
 
 {
   "project_name": "short-slug",
+  "project": "absolute path to the target project root (required for brownfield)",
+  "mode": "greenfield | brownfield",
   "mvp_scope": {"in": ["..."], "out": ["..."]},
   "contracts": [{"name": "...", "definition": "signatures/schema/CLI surface, exactly"}],
   "tasks": [{
-    "id": "short-id",
+    "id": "short-id (letters, digits, dot, dash, underscore; no spaces)",
     "module": "path/owned_file.py (or directory) this task owns",
     "owner_files": ["exact list of files the worker may create/edit"],
     "spec": "enumerated requirements + edge cases, written as instructions to the worker",
     "acceptance": ["machine-checkable checks, e.g. 'python -m pytest tests/test_x.py passes'"],
     "test_command": "the single exact command the worker runs to verify, e.g. npx jest src/domain",
-    "thinking": "medium | high",
-    "wave": 1,
-    "deps": []
+    "thinking": "off | minimal | low | medium | high | xhigh | max",
+    "wave": 1
   }],
   "acceptance_criteria": [{"id": "AC-1", "criterion": "...", "check": "command or inspection"}]
 }

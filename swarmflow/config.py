@@ -33,7 +33,6 @@ DEFAULTS = {
         "node": "node",
         "pi_cli": "",
         "model": "",
-        "thinking": "high",
         "retry_thinking": "medium",
         "timeout_s": 2400,
         "max_turns": 45,

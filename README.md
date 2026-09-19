@@ -19,7 +19,7 @@ single source of truth; every claim is verified by artifacts, never by exit code
 
 ## Quickstart
 ```bash
-pip install -e ".[dev]"          # stdlib + pyyaml; pytest for development
+pip install -e ".[dev]"          # runtime deps: pyyaml + psutil; pytest for development
 swarmflow init                   # writes config/swarmflow.yaml from the example
 $EDITOR config/swarmflow.yaml    # set your worker model id and CLI paths
 swarmflow smoke-frontier         # configured frontier backend reachability
@@ -28,6 +28,8 @@ swarmflow plan-load --plan examples/smoke-plan.yaml --project <path>
 swarmflow freeze --project <path>
 swarmflow wave-run --wave 1
 swarmflow audit --project <path> --json
+swarmflow status --json                # ledger state
+swarmflow trace logs/<task>_a1.jsonl   # session-trace analysis (always JSON)
 ```
 
 Brownfield (existing repositories):
@@ -35,18 +37,24 @@ Brownfield (existing repositories):
 swarmflow recon --project <repo>            # stacks, commands, tests, git state
 # write plan.yaml with `mode: brownfield` (the planner gets the recon digest)
 swarmflow plan-load --plan plan.yaml        # clean-tree check, run branch, .swarmflow/
-swarmflow wave-run --wave 1                 # per-wave freeze + regression gate + audit
+swarmflow wave-run --wave 1                 # sweep + regression gate + discrimination + audit
 swarmflow evidence --project <repo>         # bundle for the verifier/acceptance pass
 ```
 
+Useful wave flags: `--rebaseline` (re-record the regression baseline when the current
+state is known-good), `--strict` (force fail-closed comparison), `--skip-regression`,
+`--concurrency N`. `swarmflow recon --regression-command "<cmd>"` overrides detection
+for a single survey; `swarmflow freeze --mode brownfield` snapshots the git baseline.
+
 ## How it works (short version)
 ```
-PRD --(frontier: plan)--> work packages + frozen contracts + acceptance criteria
+PRD --(frontier: plan, operator-run)--> work packages + frozen contracts + acceptance
     --(scaffold + freeze)--> repo, AGENTS.md worker rules, sha256 baseline
     --(swarm waves)--> modules + tests + reports, disjoint file ownership
-    --(audit + verify)--> regression suite, scope audit, verifier findings
+    --(gate pipeline)--> process sweep, regression fingerprints, discrimination check,
+                         scope audit (all automatic per wave)
     --(integrate)--> shared-file wiring + end-to-end probe
-    --(accept)--> evidence bundle mapped to acceptance criteria
+    --(accept, operator-run)--> evidence bundle mapped to acceptance criteria
 ```
 Guardrails exist because of observed failures in real runs: turn caps, forbidden-action
 scanning (`npm install`, `pnpm`, `rm -rf node_modules`), frozen-file integrity auditing,
@@ -54,9 +62,12 @@ admission control against the model server, and reasoning-spiral retries at lowe
 thinking. See the case study for what each one caught.
 
 ## Status
-Alpha. The core pipeline is implemented and was validated end-to-end on a 5-task
-NestJS project (48 unit + 11 e2e tests, external HTTP probe 13/13, frontier verifier
-verdict `pass`). PR automation is intentionally out of scope for now.
+Alpha. The deterministic pipeline is implemented and was validated end-to-end on a 5-task
+NestJS project (48 unit + 11 e2e tests, external HTTP probe 13/13). Frontier access
+(planning, verification, acceptance) is backend-agnostic but **operator-run today**: the
+prompt templates in `prompts/` are pasted into the configured backend by hand - no
+`plan`/`verify`/`accept` commands wire them in yet. PR automation is intentionally out
+of scope for now.
 
 ## License
 MIT - see [LICENSE](LICENSE).

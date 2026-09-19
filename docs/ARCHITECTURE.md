@@ -4,10 +4,10 @@
 
 | Role | Backed by | Responsibility |
 |---|---|---|
-| Planner / Verifier / Acceptator | deepseek-v4-flash via `cmd -p` headless (`FrontierClient`) | PRD decomposition, contract design, failure triage, verdicts, acceptance |
+| Planner / Verifier / Acceptator | a configured frontier backend (`frontier.py`: `openai` / `commandcode` / `cli` / `pi`) - **operator-run today**: no `plan`/`verify`/`accept` command wires these prompts in yet | PRD decomposition, contract design, failure triage, verdicts, acceptance |
 | Worker | local Pi session -> vllm-79/qwen36 | implement one pinned task (module + tests + report) |
 | Control plane | `swarmflow` Python package | deterministic state machine: queue, dispatch, admission control, retries, artifact audits |
-| Human | pull request review | the only human checkpoint for now: merge the PR or send it back |
+| Human | run-branch review | the only human checkpoint for now: review the branch (no PR automation) |
 
 ## Task state machine
 
@@ -104,7 +104,8 @@ configured.
 
 ```
 swarmflow/            control plane package (config, ledger, runstate, frontier, workers,
-                      plan, audit, regression, discrimination, procs, sweep, evidence, cli)
+                      recon, plan, audit, regression, discrimination, procs, sweep,
+                      evidence, cli)
 config/               swarmflow.yaml (models, concurrency, timeouts, paths)
 prompts/              planner, task brief, verifier, acceptance templates
 AGENTS.worker.md      canonical worker rules (copied into scaffolded projects)

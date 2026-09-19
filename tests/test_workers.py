@@ -118,3 +118,33 @@ def test_test_runners_are_not_server_launches(tmp_path):
 def test_server_launch_scan_does_not_reject_delivery(tmp_path):
     trace = _trace_with_bash(tmp_path, "npm run dev")
     assert scan_forbidden(str(trace)) == []
+
+
+def test_read_server_load_parses_vllm_gauges(monkeypatch):
+    from swarmflow.workers import read_server_load
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return (b"vllm:num_requests_running 3.0\n"
+                    b"vllm:num_requests_waiting 0.0\n"
+                    b"vllm:kv_cache_usage_perc 0.42\n")
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=5: FakeResponse())
+    assert read_server_load("http://x/metrics") == {"running": 3.0, "waiting": 0.0,
+                                                    "kv": 0.42}
+
+
+def test_read_server_load_failure_is_empty(monkeypatch):
+    from swarmflow.workers import read_server_load
+
+    def boom(url, timeout=5):
+        raise OSError("no metrics endpoint")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    assert read_server_load("http://x/metrics") == {}

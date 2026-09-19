@@ -43,12 +43,18 @@ def cmd_smoke_frontier(args, config) -> int:
     try:
         client = _frontier(config)
     except (FileNotFoundError, FrontierError) as exc:
-        print(f"FRONTIER FAIL: {exc}")
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(f"FRONTIER FAIL: {exc}")
         return 1
     try:
         result = client.complete("Reply with exactly: frontier-ok")
     except FrontierError as exc:
-        print(f"FRONTIER FAIL: {exc}")
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(f"FRONTIER FAIL: {exc}")
         return 1
     ok = result["ok"] and "frontier-ok" in result["final_text"]
     if args.json:
@@ -69,7 +75,10 @@ def cmd_smoke_worker(args, config) -> int:
         runner = _runner(config, ledger, str(workdir))
         result = runner.run_inline("Reply with exactly: worker-ok")
     except (ValueError, FileNotFoundError) as exc:
-        print(f"WORKER FAIL: {exc}")
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(f"WORKER FAIL: {exc}")
         ledger.close()
         return 1
     ok = "worker-ok" in result["scan"].get("last_text", "")
@@ -101,13 +110,16 @@ def cmd_evidence(args, config) -> int:
     path = write_bundle(str(Path(args.project).resolve()), ledger,
                         ignores=config["audit"]["ignore_extra"])
     ledger.close()
-    print(f"evidence bundle written: {path} ({path.stat().st_size} bytes)")
+    if args.json:
+        print(json.dumps({"bundle": str(path), "bytes": path.stat().st_size}))
+    else:
+        print(f"evidence bundle written: {path} ({path.stat().st_size} bytes)")
     return 0
 
 
 def cmd_trace(args, config) -> int:
     scan = scan_trace(args.file, config["worker"]["max_output_tokens"])
-    print(json.dumps(scan, indent=2)[:4000])
+    print(json.dumps(scan, indent=2))
     return 0
 
 
@@ -212,8 +224,13 @@ def cmd_plan_load(args, config) -> int:
     ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
     counts = enqueue_plan(ledger, plan, project_root, info["spec_paths"])
     ledger.close()
-    print(f"[{mode}] scaffolded {project_root} (git: {info['git']}); enqueued "
-          f"{counts['inserted']}/{counts['total']} tasks")
+    if args.json:
+        print(json.dumps({"mode": mode, "project": str(project_root),
+                          "tasks": counts, "git": info["git"],
+                          "spec_paths": len(info["spec_paths"])}))
+    else:
+        print(f"[{mode}] scaffolded {project_root} (git: {info['git']}); enqueued "
+              f"{counts['inserted']}/{counts['total']} tasks")
     return 0
 
 
@@ -620,6 +637,7 @@ def main(argv: list[str] | None = None) -> int:
                            help="brownfield: allow modified tracked files")
     plan_load.add_argument("--kill-stale", action="store_true",
                            help="brownfield: terminate pre-existing project listeners")
+    plan_load.add_argument("--json", action="store_true")
     plan_load.set_defaults(func=cmd_plan_load)
 
     wave = sub.add_parser("wave-run", help="run one wave of queued tasks")
@@ -653,6 +671,7 @@ def main(argv: list[str] | None = None) -> int:
 
     evidence_p = sub.add_parser("evidence", help="assemble the evidence bundle for a project")
     evidence_p.add_argument("--project", required=True)
+    evidence_p.add_argument("--json", action="store_true")
     evidence_p.set_defaults(func=cmd_evidence)
 
     args = parser.parse_args(argv)

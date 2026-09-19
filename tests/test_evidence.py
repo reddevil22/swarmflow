@@ -141,20 +141,21 @@ def test_bundle_contains_all_sections(tmp_path):
     text = bundle(str(repo), ledger)
     ledger.close()
 
-    for marker in ["# Evidence bundle", "## Recon digest", "## Tasks", "T1",
-                   "acceptance: the probe passes",
-                   "## Worker reports", "REPORT CHANGES", "## Audit", "## Regression",
-                   "python -m pytest -q", "FINAL-TAIL-MARKER", "## Git diff vs base",
-                   "### Sensitive paths diff", "test_app.py",
-                   "baseline failing tests (1)", "tests/test_app.py::test_ok",
-                   "latest comparison (wave1.compare.json)",
-                   "new failing test: tests/test_app.py::test_x",
-                   "## Discrimination", "fails_at_parent: tests/test_app.py",
-                   "passes_at_parent: tests/test_other.py",
-                   "## Processes (post-wave sweep)",
-                   "leaked: pid 4242 node (ports: 3000)",
-                   "pre-existing listener (untouched): pid 99"]:
-        assert marker in text, f"missing: {marker}"
+    markers = ["# Evidence bundle", "## Recon digest", "## Tasks", "T1",
+               "acceptance: the probe passes",
+               "## Worker reports", "REPORT CHANGES", "## Audit", "## Regression",
+               "python -m pytest -q", "FINAL-TAIL-MARKER", "## Git diff vs base",
+               "### Sensitive paths diff", "test_app.py",
+               "baseline failing tests (1)", "tests/test_app.py::test_ok",
+               "latest comparison (wave1.compare.json)",
+               "new failing test: tests/test_app.py::test_x",
+               "## Discrimination", "fails_at_parent: tests/test_app.py",
+               "passes_at_parent: tests/test_other.py",
+               "## Processes (post-wave sweep)",
+               "leaked: pid 4242 node (ports: 3000)",
+               "pre-existing listener (untouched): pid 99"]
+    missing = [marker for marker in markers if marker not in text]
+    assert not missing, f"missing markers: {missing}"
 
     ledger = Ledger(str(tmp_path / "ledger.db"))
     path = write_bundle(str(repo), ledger)

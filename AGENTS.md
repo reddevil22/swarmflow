@@ -53,6 +53,7 @@ swarmflow smoke-worker          # needs Pi + a local model endpoint
 ## Gotchas
 - Windows: `.cmd` shims must be invoked through `cmd /c`; `.js` entry points through
   `node`. Use `swarmflow.config.build_cli_command`.
-- `NODE_ENV=production` in the environment makes npm omit devDependencies; installs via
-  the scaffold use `--include=dev` for that reason.
+- `NODE_ENV=production` in this environment makes npm omit devDependencies: when someone
+  installs dependencies for a target repo, use `npm ci --include=dev`. The control plane
+  never installs anything itself.
 - The ledger (`state/ledger.db`) is local state, never committed.

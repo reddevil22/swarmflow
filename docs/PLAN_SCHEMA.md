@@ -26,7 +26,7 @@ writes per-task specs, and enqueues tasks in the ledger.
 | `acceptance` | no | machine-checkable checks (listed in the brief and used by verifiers) |
 | `test_command` | recommended | one exact runnable command the worker runs to verify; injected verbatim into the brief so workers never discover test setups |
 | `files_to_read` | no | existing files the worker should study first (defaults to `owner_files`) |
-| `thinking` | no | `medium` or `high` (default `high`); use `medium` for parser/formatting-heavy tasks to avoid reasoning spirals |
+| `thinking` | no | one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (default `high`); use `medium` for parser/formatting-heavy tasks to avoid reasoning spirals |
 | `wave` | no | integer wave (default 1); later waves may depend on earlier files existing |
 
 ## Validation rules (enforced by `swarmflow.plan.validate_plan`)
@@ -40,6 +40,11 @@ writes per-task specs, and enqueues tasks in the ledger.
 4. Ids are unique; `test_command` (when present) must be a string.
 5. Wave assignment should reflect dependency order: wave 1 tasks must be buildable
    from the scaffold alone.
+6. `id` and `project_name` must match `^[A-Za-z0-9._-]{1,64}$` and contain no `..`
+   (ids become spec/log filenames); `owner_files` and `files_to_read` entries must be
+   non-empty, project-relative, and free of `..` segments and drive prefixes.
+7. `thinking` must be one of the levels above; `acceptance` must be a list of strings;
+   `module` must be a string.
 
 ## Example
 See `examples/smoke-plan.yaml` for a minimal two-task plan and `docs/CASE_STUDY.md`

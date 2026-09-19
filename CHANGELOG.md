@@ -28,6 +28,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `Ledger` is a context manager; `audit` failures (corrupt baseline, missing baseline on
   a brownfield run, unexpected exceptions) fail the wave structurally instead of
   escaping it, and `swarmflow evidence` honours `audit.ignore_extra` like the wave gate.
+- `--json` output added to `plan-load` and `evidence`; `smoke-frontier`/`smoke-worker`
+  emit a JSON error object on failure; `trace` output is always valid JSON (no more
+  mid-token truncation). CLI tests now assert every `--json` document parses.
+- Docs/config/prompt truth-up: WORKFLOW's Stage 6/7 no longer claim PR/package
+  automation (`gh`, `awaiting_pr_review`, `wave run --continue` never existed); the
+  evidence section describes what is actually written; planner/verifier/acceptance are
+  marked operator-run; the planner schema carries `project`/`mode` and drops the dead
+  `deps` key; the dead `worker.thinking` config key is gone and `frontier.thinking` /
+  `frontier.effort` are labelled per backend; README lists the runtime dependencies
+  (pyyaml + psutil) and the wave flags.
 - **Brownfield support** (existing repositories, regression-safe):
   - `swarmflow recon` surveys a repo deterministically (stacks, evidence-backed test/
     build/lint commands, git state with tracked-only dirtiness, test inventory).
