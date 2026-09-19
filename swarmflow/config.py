@@ -1,6 +1,7 @@
 """Configuration loading, portability helpers and executable resolution."""
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -37,6 +38,8 @@ DEFAULTS = {
         "timeout_s": 2400,
         "max_turns": 45,
         "max_output_tokens": 32768,
+        "poll_s": 15.0,         # supervisor tick (per-handle turn/timeout checks)
+        "kill_grace_s": 30.0,   # bounded wait after a tree kill before giving up
     },
     "swarm": {
         "concurrency": 8,
@@ -48,6 +51,7 @@ DEFAULTS = {
     "paths": {
         "logs_dir": "logs",
         "ledger": "state/ledger.db",
+        "state_dir": "state",   # control-plane run store, relative to the repo root
     },
     "audit": {
         "ignore_extra": [],
@@ -120,11 +124,61 @@ def resolve_config_path(path: str | None = None) -> Path:
     )
 
 
+SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9._/@:+-]{1,120}$")
+CMD_UNSAFE_RE = re.compile(r'[&|^<>%" ]')
+
+
+def _cmd_routed(path: str) -> bool:
+    return path.lower().endswith((".cmd", ".bat"))
+
+
+def validate_config(config: dict) -> list:
+    """Problems that would let a value reach cmd.exe unescaped (or break silently).
+
+    Empty strings and None are legitimate defaults ("not configured yet") and are
+    skipped - only values that are actually present are checked.
+    """
+    problems = []
+    worker = config.get("worker") or {}
+    frontier = config.get("frontier") or {}
+
+    def check_value(label, value):
+        if isinstance(value, str) and value and not SAFE_VALUE_RE.match(value):
+            problems.append(f"{label} contains unsupported characters: {value!r}")
+
+    for label in ("model", "thinking", "retry_thinking"):
+        check_value(f"worker.{label}", worker.get(label))
+    for label in ("model", "thinking", "effort"):
+        check_value(f"frontier.{label}", frontier.get(label))
+    check_value("worker.node", worker.get("node"))
+    check_value("frontier.node", frontier.get("node"))
+    for label, value in (("worker.pi_cli", worker.get("pi_cli")),
+                         ("frontier.pi_cli", frontier.get("pi_cli")),
+                         ("frontier.cmd_path", frontier.get("cmd_path"))):
+        if isinstance(value, str) and value and _cmd_routed(value) \
+                and CMD_UNSAFE_RE.search(value):
+            problems.append(
+                f"{label}: a .cmd/.bat path containing spaces or shell metacharacters "
+                f"cannot be routed through cmd.exe safely ({value!r}); point at the "
+                f".js entry instead")
+    for name in (config.get("discrimination") or {}).get("link_dirs") or []:
+        if not isinstance(name, str) or not SAFE_VALUE_RE.match(name):
+            problems.append(f"discrimination.link_dirs entry is invalid: {name!r}")
+    for name in (config.get("sweep") or {}).get("ignore_names") or []:
+        if not isinstance(name, str) or not SAFE_VALUE_RE.match(name):
+            problems.append(f"sweep.ignore_names entry is invalid: {name!r}")
+    return problems
+
+
 def load_config(path: str | None = None) -> dict:
     """Load configuration, deep-merged over defaults, with env expansion."""
     config_path = resolve_config_path(path)
     data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    return _expand(_merge(DEFAULTS, data))
+    merged = _expand(_merge(DEFAULTS, data))
+    problems = validate_config(merged)
+    if problems:
+        raise ValueError("invalid configuration:\n  - " + "\n  - ".join(problems))
+    return merged
 
 
 def resolve_executable(names: list[str]) -> str:

@@ -17,6 +17,7 @@ from .procs import kill_tree, snapshot as process_snapshot
 from .regression import compare, run_regression
 from .sweep import find_stale, run_sweep
 from .workers import WaveAborted, WorkerRunner, scan_trace
+from . import runstate
 
 
 def _frontier(config) -> object:
@@ -97,7 +98,8 @@ def cmd_recon(args, config) -> int:
 def cmd_evidence(args, config) -> int:
     from .evidence import write_bundle
     ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
-    path = write_bundle(str(Path(args.project).resolve()), ledger)
+    path = write_bundle(str(Path(args.project).resolve()), ledger,
+                        ignores=config["audit"]["ignore_extra"])
     ledger.close()
     print(f"evidence bundle written: {path} ({path.stat().st_size} bytes)")
     return 0
@@ -110,9 +112,9 @@ def cmd_trace(args, config) -> int:
 
 
 def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
-    """Git-required preflight: clean tree, ignore entries, recon, branch, run.json."""
+    """Git-required preflight: clean tree, ignore entries, recon, branch, control state."""
     from .recon import (branch_ensure, ensure_gitignore_entries, git_state,
-                        load_recon, recon as run_recon)
+                        recon as run_recon)
     state = git_state(project_root)
     if not state.get("is_git"):
         print("brownfield mode requires a git repository; run `git init` first")
@@ -123,39 +125,42 @@ def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
         for line in (state["dirty_tracked"] or [])[:10]:
             print(f"  {line}")
         return 2
+    adopted = runstate.adopt_legacy(str(project_root))
+    if adopted:
+        print("adopted legacy .swarmflow/run.json into the control-plane state store "
+              f"({', '.join(adopted)}); worker-writable regression/audit fields were "
+              "not imported")
     gitignore_existed = (project_root / ".gitignore").exists()
     added = ensure_gitignore_entries(project_root, [".swarmflow/", "logs/"])
     audit_ignores = [] if gitignore_existed else [".gitignore"]
     if added:
         print(f"added to .gitignore: {', '.join(added)}")
-    # preserve a regression command provided via a previous recon override
-    preserved = ""
-    existing = load_recon(str(project_root))
-    existing_regression = ((existing.get("commands") or {}).get("regression") or {})
-    if existing_regression.get("evidence") == "config/CLI override":
-        preserved = existing_regression.get("command", "")
-    run_recon(str(project_root),
-              regression_command=config["regression"].get("command") or preserved)
+    override = config["regression"].get("command") or ""
+    run_recon(str(project_root), regression_command=override)
+    detected = _recon_regression_command(str(project_root))
     branch = config["git"]["branch_prefix"] + (plan.get("project_name") or "run")
     action = branch_ensure(str(project_root), branch)
-    run_path = project_root / ".swarmflow" / "run.json"
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
-    if run_path.exists():
-        try:
-            data = json.loads(run_path.read_text(encoding="utf-8"))
-        except ValueError:
-            data = {}
-        data["updated_at"] = now
-        data.setdefault("audit_ignores", audit_ignores)
-        run_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    else:
-        data = {"plan_path": str(Path(args.plan).resolve()), "mode": "brownfield",
-                "branch": branch, "base_sha": state.get("head", ""),
-                "audit_ignores": audit_ignores,
-                "created_at": now, "updated_at": now}
-        run_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    data = runstate.load_run(str(project_root))
+    data.update({"plan_path": str(Path(args.plan).resolve()), "mode": "brownfield",
+                 "project": str(project_root.resolve()), "branch": branch,
+                 "base_sha": data.get("base_sha") or state.get("head", ""),
+                 "updated_at": now})
+    data.setdefault("created_at", now)
+    data.setdefault("audit_ignores", audit_ignores)
+    command = override or detected or data.get("regression_command", "")
+    if command:
+        data["regression_command"] = command
+        if override:
+            data["regression_source"] = "config override"
+        elif detected:
+            data["regression_source"] = "recon"
+        else:
+            data.setdefault("regression_source", "previous run")
+    runstate.save_run(str(project_root), data)
+    runstate.write_mirror(str(project_root), data)
     print(f"brownfield preflight ok: branch {branch} ({action}), "
-          f"base {str(state.get('head') or '')[:10]}, recon written")
+          f"base {str(state.get('head') or '')[:10]}, recon written, gate command frozen")
     stale = find_stale(str(project_root), process_snapshot(), config.get("sweep") or {})
     if stale:
         for record in stale:
@@ -190,6 +195,20 @@ def cmd_plan_load(args, config) -> int:
         if rc:
             return rc
     info = scaffold(plan, project_root, REPO_ROOT, mode=mode)
+    if mode != "brownfield":
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        data = runstate.load_run(str(project_root))
+        data.update({"plan_path": str(Path(args.plan).resolve()), "mode": mode,
+                     "project": str(project_root.resolve()), "updated_at": now})
+        data.setdefault("created_at", now)
+        override = config["regression"].get("command") or ""
+        command = override or _recon_regression_command(str(project_root))
+        if command:
+            data["regression_command"] = command
+            data.setdefault("regression_source",
+                            "config override" if override else "recon")
+        runstate.save_run(str(project_root), data)
+        runstate.write_mirror(str(project_root), data)
     ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
     counts = enqueue_plan(ledger, plan, project_root, info["spec_paths"])
     ledger.close()
@@ -198,22 +217,12 @@ def cmd_plan_load(args, config) -> int:
     return 0
 
 
-def _load_run_state(project_root: str) -> dict:
-    path = Path(project_root) / ".swarmflow" / "run.json"
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except ValueError:
-        return {}
-
-
 def _save_regression_baseline(project_root: str, baseline: dict) -> None:
-    path = Path(project_root) / ".swarmflow" / "run.json"
-    data = _load_run_state(project_root)
+    data = runstate.load_run(project_root)
     stored = {key: value for key, value in baseline.items() if key != "output"}
     data.setdefault("regression", {})["baseline"] = stored
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    runstate.save_run(project_root, data)
+    runstate.write_mirror(project_root, data)
 
 
 def _slim_comparison(comparison: dict) -> dict:
@@ -242,134 +251,158 @@ def _recon_regression_command(project_root: str) -> str:
 
 
 def cmd_wave_run(args, config) -> int:
-    ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
-    tasks = ledger.list_tasks(status="queued", wave=args.wave)
-    if not tasks:
+    with Ledger(str(REPO_ROOT / config["paths"]["ledger"])) as ledger:
+        tasks = ledger.list_tasks(status="queued", wave=args.wave)
+        if not tasks:
+            if args.json:
+                print(json.dumps({"wave": args.wave, "results": [],
+                                  "ledger": ledger.counts()}))
+            else:
+                print(f"no queued tasks in wave {args.wave}")
+            return 0
+        projects = {task["project"] for task in tasks}
+        if len(projects) > 1:
+            print(f"refusing to run a wave mixing projects: {sorted(projects)}")
+            return 2
+        project_root = tasks[0]["project"]
+        run_state = runstate.load_run(project_root)
+        brownfield = run_state.get("mode") == "brownfield"
+        if brownfield:
+            owners = {task["id"]: task["owner_files"] for task in tasks}
+            info = freeze(project_root, owners, ignores=config["audit"]["ignore_extra"],
+                          mode="brownfield")
+            print(f"per-wave freeze: {info['frozen_files']} tracked file(s), "
+                  f"{info['owned']} owned path(s)")
+        regression_enabled = bool(config["regression"].get("enabled", True)) \
+            and not args.skip_regression
+        regression_timeout = float(config["regression"]["timeout_s"])
+        strict = bool(config["regression"].get("strict", True)) or args.strict
+        tolerance = int(config["regression"].get("shrink_tolerance", 0))
+        regression_command = _gate_command(project_root, run_state, config)
+        baseline = (run_state.get("regression") or {}).get("baseline")
+        if regression_enabled and regression_command and args.rebaseline:
+            baseline = run_regression(
+                project_root, regression_command, timeout_s=regression_timeout,
+                evidence_path=str(Path(project_root) / ".swarmflow" / "evidence" / "baseline.txt"))
+            _save_regression_baseline(project_root, baseline)
+            ledger.record_event(tasks[0]["id"], "rebaseline",
+                                "operator re-recorded the regression baseline")
+            print(f"regression baseline re-recorded: rc={baseline.get('rc')} "
+                  f"failures={baseline.get('failures')} tests_ran={baseline.get('tests_ran')}")
+        elif regression_enabled and regression_command and baseline is None:
+            baseline = run_regression(
+                project_root, regression_command, timeout_s=regression_timeout,
+                evidence_path=str(Path(project_root) / ".swarmflow" / "evidence" / "baseline.txt"))
+            _save_regression_baseline(project_root, baseline)
+            print(f"regression baseline recorded: rc={baseline.get('rc')} "
+                  f"failures={baseline.get('failures')} tests_ran={baseline.get('tests_ran')}")
+        elif regression_enabled and not regression_command:
+            print("regression gate skipped: no command frozen at plan-load (set "
+                  "regression.command and re-run plan-load)")
+        sweep_before = process_snapshot() if config["sweep"].get("enabled", True) else None
+        wave_start = time.time()
+        runner = _runner(config, ledger, project_root)
+        try:
+            results = runner.run_wave(args.wave, args.concurrency)
+        except WaveAborted as exc:
+            print(f"wave aborted: {exc}")
+            return 1
+        sweep_after = process_snapshot() if sweep_before is not None else None
+        report = {"wave": args.wave, "results": []}
+        failures = 0
+        for result in results:
+            task = ledger.get(result["task_id"])
+            status = task["status"] if task else "?"
+            if status != "delivered":
+                failures += 1
+            entry = {"task_id": result["task_id"], "outcome": result["outcome"],
+                     "status": status, "turns": result["scan"]["turns"],
+                     "out_tokens": result["scan"]["out_tokens"],
+                     "server_launches": len(result.get("server_launches") or [])}
+            report["results"].append(entry)
+            if not args.json:
+                print(f"  {entry['task_id']:<20} {entry['outcome']:<18} status={status} "
+                      f"turns={entry['turns']} out_tokens={entry['out_tokens']}")
+                if entry["server_launches"]:
+                    print(f"    note: {entry['server_launches']} server/watcher "
+                          f"command(s) observed in the trace")
+        report["sweep"] = _run_sweep(project_root, args.wave, sweep_before, sweep_after,
+                                     wave_start, config, ledger, tasks[0]["id"],
+                                     quiet=args.json)
+        if regression_enabled and regression_command and not args.rebaseline:
+            current = run_regression(
+                project_root, regression_command, timeout_s=regression_timeout,
+                evidence_path=str(Path(project_root) / ".swarmflow" / "evidence"
+                                  / f"wave{args.wave}.txt"))
+            comparison = compare(baseline, current, strict=strict,
+                                 shrink_tolerance=tolerance)
+            report["regression"] = _slim_comparison(comparison)
+            compare_path = _write_comparison(project_root, args.wave, comparison)
+            if comparison["regressed"]:
+                failures += 1
+                reason = "; ".join(comparison["reasons"])
+                ledger.record_event(tasks[0]["id"], "regression", reason[:500])
+                print(f"REGRESSION DETECTED: {reason}")
+                for name in comparison["new_failures"][:10]:
+                    print(f"  new failing test: {name}")
+                if comparison["fixed_failures"]:
+                    print(f"  fixed: {len(comparison['fixed_failures'])} known-failing "
+                          f"test(s)")
+                print(f"  comparison: {compare_path}")
+                print("  fix the regression before continuing (or --skip-regression at "
+                      "your own risk)")
+            elif comparison["indeterminate"]:
+                print(f"REGRESSION GATE WARNING: {'; '.join(comparison['reasons'])}")
+                print("  the results could not be compared; re-record the baseline with "
+                      "--rebaseline once the current state is known-good")
+            elif baseline is not None:
+                detail = "; ".join(comparison["reasons"]) or "green -> green"
+                print(f"regression gate: no new failures ({detail})")
+        disc_state, disc_result = _run_discrimination(
+            project_root, args.wave, tasks, config, ledger,
+            dict(run_state, regression={"baseline": baseline}), quiet=args.json)
+        report["discrimination"] = disc_result
+        if disc_state == "fail":
+            failures += 1
+        report["ledger"] = ledger.counts()
+        audit_ignores = list(config["audit"]["ignore_extra"]) \
+            + list(run_state.get("audit_ignores") or [])
+        audit_state, audit_result = _run_audit(project_root, ledger, tasks[0]["id"],
+                                               quiet=args.json, ignores=audit_ignores,
+                                               brownfield=brownfield)
+        report["audit"] = {"state": audit_state, "result": audit_result}
         if args.json:
-            print(json.dumps({"wave": args.wave, "results": [], "ledger": ledger.counts()}))
+            print(json.dumps(report))
         else:
-            print(f"no queued tasks in wave {args.wave}")
-        ledger.close()
-        return 0
-    projects = {task["project"] for task in tasks}
-    if len(projects) > 1:
-        print(f"refusing to run a wave mixing projects: {sorted(projects)}")
-        ledger.close()
-        return 2
-    project_root = tasks[0]["project"]
-    run_state = _load_run_state(project_root)
-    brownfield = run_state.get("mode") == "brownfield"
-    if brownfield:
-        owners = {task["id"]: task["owner_files"] for task in tasks}
-        info = freeze(project_root, owners, ignores=config["audit"]["ignore_extra"],
-                      mode="brownfield")
-        print(f"per-wave freeze: {info['frozen_files']} tracked file(s), "
-              f"{info['owned']} owned path(s)")
-    regression_enabled = bool(config["regression"].get("enabled", True)) \
-        and not args.skip_regression
-    regression_timeout = float(config["regression"]["timeout_s"])
-    strict = bool(config["regression"].get("strict", True)) or args.strict
-    tolerance = int(config["regression"].get("shrink_tolerance", 0))
-    regression_command = config["regression"].get("command") \
-        or _recon_regression_command(project_root)
-    baseline = (run_state.get("regression") or {}).get("baseline")
-    if regression_enabled and regression_command and args.rebaseline:
-        baseline = run_regression(
-            project_root, regression_command, timeout_s=regression_timeout,
-            evidence_path=str(Path(project_root) / ".swarmflow" / "evidence" / "baseline.txt"))
-        _save_regression_baseline(project_root, baseline)
-        ledger.record_event(tasks[0]["id"], "rebaseline",
-                            "operator re-recorded the regression baseline")
-        print(f"regression baseline re-recorded: rc={baseline.get('rc')} "
-              f"failures={baseline.get('failures')} tests_ran={baseline.get('tests_ran')}")
-    elif regression_enabled and regression_command and baseline is None:
-        baseline = run_regression(
-            project_root, regression_command, timeout_s=regression_timeout,
-            evidence_path=str(Path(project_root) / ".swarmflow" / "evidence" / "baseline.txt"))
-        _save_regression_baseline(project_root, baseline)
-        print(f"regression baseline recorded: rc={baseline.get('rc')} "
-              f"failures={baseline.get('failures')} tests_ran={baseline.get('tests_ran')}")
-    elif regression_enabled and not regression_command:
-        print("regression gate skipped: no command detected (run `swarmflow recon` "
-              "or set regression.command)")
-    sweep_before = process_snapshot() if config["sweep"].get("enabled", True) else None
-    wave_start = time.time()
-    runner = _runner(config, ledger, project_root)
-    try:
-        results = runner.run_wave(args.wave, args.concurrency)
-    except WaveAborted as exc:
-        print(f"wave aborted: {exc}")
-        ledger.close()
-        return 1
-    sweep_after = process_snapshot() if sweep_before is not None else None
-    report = {"wave": args.wave, "results": []}
-    failures = 0
-    for result in results:
-        task = ledger.get(result["task_id"])
-        status = task["status"] if task else "?"
-        if status != "delivered":
-            failures += 1
-        entry = {"task_id": result["task_id"], "outcome": result["outcome"],
-                 "status": status, "turns": result["scan"]["turns"],
-                 "out_tokens": result["scan"]["out_tokens"],
-                 "server_launches": len(result.get("server_launches") or [])}
-        report["results"].append(entry)
-        if not args.json:
-            print(f"  {entry['task_id']:<20} {entry['outcome']:<18} status={status} "
-                  f"turns={entry['turns']} out_tokens={entry['out_tokens']}")
-            if entry["server_launches"]:
-                print(f"    note: {entry['server_launches']} server/watcher command(s) "
-                      f"observed in the trace")
-    report["sweep"] = _run_sweep(project_root, args.wave, sweep_before, sweep_after,
-                                 wave_start, config, ledger, tasks[0]["id"],
-                                 quiet=args.json)
-    if regression_enabled and regression_command and not args.rebaseline:
-        current = run_regression(
-            project_root, regression_command, timeout_s=regression_timeout,
-            evidence_path=str(Path(project_root) / ".swarmflow" / "evidence"
-                              / f"wave{args.wave}.txt"))
-        comparison = compare(baseline, current, strict=strict,
-                             shrink_tolerance=tolerance)
-        report["regression"] = _slim_comparison(comparison)
-        compare_path = _write_comparison(project_root, args.wave, comparison)
-        if comparison["regressed"]:
-            failures += 1
-            reason = "; ".join(comparison["reasons"])
-            ledger.record_event(tasks[0]["id"], "regression", reason[:500])
-            print(f"REGRESSION DETECTED: {reason}")
-            for name in comparison["new_failures"][:10]:
-                print(f"  new failing test: {name}")
-            if comparison["fixed_failures"]:
-                print(f"  fixed: {len(comparison['fixed_failures'])} known-failing "
-                      f"test(s)")
-            print(f"  comparison: {compare_path}")
-            print("  fix the regression before continuing (or --skip-regression at "
-                  "your own risk)")
-        elif comparison["indeterminate"]:
-            print(f"REGRESSION GATE WARNING: {'; '.join(comparison['reasons'])}")
-            print("  the results could not be compared; re-record the baseline with "
-                  "--rebaseline once the current state is known-good")
-        elif baseline is not None:
-            detail = "; ".join(comparison["reasons"]) or "green -> green"
-            print(f"regression gate: no new failures ({detail})")
-    disc_state, disc_result = _run_discrimination(
-        project_root, args.wave, tasks, config, ledger,
-        dict(run_state, regression={"baseline": baseline}), quiet=args.json)
-    report["discrimination"] = disc_result
-    if disc_state == "fail":
-        failures += 1
-    report["ledger"] = ledger.counts()
-    audit_ignores = list(config["audit"]["ignore_extra"]) \
-        + list(run_state.get("audit_ignores") or [])
-    audit_state, audit_result = _run_audit(project_root, ledger, tasks[0]["id"],
-                                           quiet=args.json, ignores=audit_ignores)
-    report["audit"] = {"state": audit_state, "result": audit_result}
-    ledger.close()
-    if args.json:
-        print(json.dumps(report))
-    else:
-        print("ledger:", report["ledger"])
-    return 0 if failures == 0 and audit_state != "fail" else 1
+            print("ledger:", report["ledger"])
+        return 0 if failures == 0 and audit_state != "fail" else 1
+
+
+def _gate_command(project_root: str, run_state: dict, config: dict) -> str:
+    """The regression command for this wave: config override > frozen store value.
+
+    Never re-derived from the worker-writable project after dispatch; the one exception
+    is an adopted pre-upgrade run, which resolves once and persists.
+    """
+    override = config["regression"].get("command") or ""
+    stored = run_state.get("regression_command") or ""
+    if override:
+        if stored and stored != override:
+            print(f"regression command overridden by config: {override!r} "
+                  f"(frozen: {stored!r})")
+        return override
+    if stored:
+        return stored
+    if run_state.get("adopted"):
+        adopted_command = _recon_regression_command(project_root)
+        if adopted_command:
+            run_state["regression_command"] = adopted_command
+            run_state["regression_source"] = "recon (adopted run)"
+            runstate.save_run(project_root, run_state)
+            print("adopted run: persisted the regression command from recon.json "
+                  "(one-time; not re-read afterwards)")
+        return adopted_command
+    return ""
 
 
 def _run_discrimination(project_root: str, wave: int, tasks: list, config: dict,
@@ -478,12 +511,25 @@ def cmd_status(args, config) -> int:
     return 0
 
 
-def _run_audit(project_root: str, ledger, task_id: str,
-               quiet: bool = False, ignores: list | None = None) -> tuple:
+def _run_audit(project_root: str, ledger, task_id: str, quiet: bool = False,
+               ignores: list | None = None, brownfield: bool = False) -> tuple:
     """Run the scope audit after a wave. Returns (state, result-or-None)."""
-    result = audit(project_root, ignores=ignores)
+    try:
+        result = audit(project_root, ignores=ignores)
+    except Exception as exc:                      # a gate bug must never break a wave
+        if not quiet:
+            print(f"SCOPE AUDIT ERROR: {exc}")
+        ledger.record_event(task_id, "audit-error", str(exc)[:500])
+        return "fail", None
     kinds = {violation["kind"] for violation in result["violations"]}
     if kinds == {"no_baseline"}:
+        if brownfield:
+            if not quiet:
+                print("SCOPE AUDIT FAIL: no frozen baseline for a brownfield run "
+                      "(control state missing?)")
+            ledger.record_event(task_id, "scope-violation",
+                                json.dumps(result["violations"])[:500])
+            return "fail", result
         if not quiet:
             print("SCOPE AUDIT skipped (no frozen baseline; run `freeze --project ...` first)")
         return "skipped", None
@@ -521,7 +567,7 @@ def cmd_freeze(args, config) -> int:
 
 def cmd_audit(args, config) -> int:
     project_root = str(Path(args.project).resolve())
-    run_state = _load_run_state(project_root)
+    run_state = runstate.load_run(project_root)
     ignores = list(config["audit"]["ignore_extra"]) \
         + list(run_state.get("audit_ignores") or [])
     result = audit(project_root, ignores=ignores)
@@ -613,6 +659,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init":
         return cmd_init(args)
     config = load_config(args.config)
+    state_dir = Path(str(config["paths"].get("state_dir") or "state"))
+    if not state_dir.is_absolute():
+        state_dir = REPO_ROOT / state_dir
+    runstate.set_state_root(state_dir)
     return args.func(args, config)
 
 

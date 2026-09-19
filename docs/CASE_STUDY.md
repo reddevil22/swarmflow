@@ -42,6 +42,12 @@ strict testing bar.
 ## Open items at the time of writing
 - No automated gate against a worker editing files it does not own (the audit catches
   it after the fact and fails the wave; prevention would need tool-level enforcement).
+- Gate *inputs* were worker-writable: `.swarmflow/recon.json` chose what the regression
+  gate executed and `frozen.json`/`run.json` could be forged. Hardened post-review
+  (`runstate.py`): gate state lives in the control-plane store outside the project, the
+  regression command is frozen at plan-load (a config override still wins), audit
+  failures are structural, and pre-upgrade runs are adopted once without importing
+  worker-influenceable fields.
 - Some generated controller tests are non-discriminating. Mechanized as the
   discrimination check (`swarmflow/discrimination.py`): each wave's owned test files are
   re-run at the run's `base_sha` in a throwaway git worktree and every file gets a

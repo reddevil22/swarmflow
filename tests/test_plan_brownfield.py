@@ -6,7 +6,7 @@ import subprocess
 import pytest
 import yaml
 
-from swarmflow import cli
+from swarmflow import cli, runstate
 from swarmflow.config import REPO_ROOT
 from swarmflow.plan import scaffold, validate_plan
 
@@ -36,7 +36,8 @@ def _write_plan(tmp_path, project, mode="brownfield"):
 
 
 def _write_config(tmp_path):
-    config = {"paths": {"ledger": str(tmp_path / "ledger.db")}}
+    config = {"paths": {"ledger": str(tmp_path / "ledger.db"),
+                        "state_dir": str(tmp_path / "state")}}
     path = tmp_path / "cfg.yaml"
     path.write_text(yaml.safe_dump(config), encoding="utf-8")
     return path
@@ -89,21 +90,30 @@ def test_scaffold_brownfield_never_touches_user_files(tmp_path):
 
 
 @pytest.mark.skipif(not GIT, reason="git not available")
-def test_preflight_preserves_recon_regression_override(tmp_path):
+def test_preflight_freezes_the_gate_command_from_config(tmp_path):
+    """The gate command comes from config/recon at plan time and is stored out of
+    reach; a pre-existing recon.json value is *not* carried over (that path used to
+    let worker-writable state choose what the gate executes)."""
     project = tmp_path / "repo"
     project.mkdir()
     _init_repo(project)
-    (project / ".swarmflow").mkdir()
-    (project / ".swarmflow" / "recon.json").write_text(json.dumps({
-        "commands": {"regression": {"command": "custom-cmd",
-                                    "evidence": "config/CLI override"}},
-    }), encoding="utf-8")
     plan_path = _write_plan(tmp_path, project)
-    config_path = _write_config(tmp_path)
+    config = {"paths": {"ledger": str(tmp_path / "ledger.db"),
+                        "state_dir": str(tmp_path / "state")},
+              "regression": {"command": "custom-cmd --run"}}
+    config_path = tmp_path / "cfg_override.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
-    assert cli.main(["--config", str(config_path), "plan-load", "--plan", str(plan_path)]) == 0
+    assert cli.main(["--config", str(config_path), "plan-load",
+                     "--plan", str(plan_path)]) == 0
+    stored = runstate.load_run(str(project))
+    assert stored["regression_command"] == "custom-cmd --run"
+    assert stored["regression_source"] == "config override"
     recon = json.loads((project / ".swarmflow" / "recon.json").read_text(encoding="utf-8"))
-    assert recon["commands"]["regression"]["command"] == "custom-cmd"
+    assert recon["commands"]["regression"]["command"] == "custom-cmd --run"
+    # the project-side run.json is only a marked mirror
+    mirror = json.loads((project / ".swarmflow" / "run.json").read_text(encoding="utf-8"))
+    assert "_mirror" in mirror
 
 
 @pytest.mark.skipif(not GIT, reason="git not available")

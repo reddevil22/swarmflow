@@ -65,8 +65,11 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    surfaces go to an integration task; `test_command` uses the repo's own runner.
 3. **Preflight** (`plan-load`): git required; tracked-file dirtiness refuses the run
    (`--allow-dirty` overrides); `.swarmflow/` and `logs/` are appended to `.gitignore`;
-   the run branch `swarmflow/<name>` is created or reused; `run.json` records
-   mode/branch/base_sha (first write wins).
+   the run branch `swarmflow/<name>` is created or reused; the gate command is resolved
+   once (config override or recon) and **frozen in the control-plane state store**
+   (`<state_dir>/runs/<hash-of-project>/run.json`, default `<repo>/state/`) together with
+   mode/branch/base_sha. The project-side `.swarmflow/run.json` is a marked mirror that
+   nothing reads; a pre-upgrade run is adopted once (structural fields only).
 4. **Waves**: before each wave, freeze only that wave's owner map (per-wave ownership).
    After each wave: the process sweep diffs process snapshots taken before/after the
    wave, attributes new processes to the project (command line or working directory),
@@ -74,9 +77,11 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    `sweep.mode: kill` terminates this wave's new processes, pre-existing listeners are
    only reported). The sweep runs **before** the regression suite so a leaked server
    cannot serve stale code to the gate. Then the project regression suite runs and is
-   compared against the baseline in `run.json` by failure identity - fingerprinted
-   failing tests plus an executed-test inventory, so a different test breaking at equal
-   counts and a suite shrinking while staying green both fail the wave. Uncomparable
+   compared against the baseline in the control-plane state store by failure identity -
+   fingerprinted failing tests plus an executed-test inventory, so a different test
+   breaking at equal counts and a suite shrinking while staying green both fail the
+   wave. A config `regression.command` change always wins over the frozen value and is
+   printed. Uncomparable
    results fail closed (`regression.strict`), the comparison is written to
    `evidence/wave<N>.compare.json`, and `--rebaseline` re-records the baseline when the
    current state is known-good. Then the discrimination check re-runs the wave's owned

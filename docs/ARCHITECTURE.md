@@ -42,7 +42,9 @@ Measured behavior this design relies on (stress test, 2026-09-19):
 | timeout / stall | process timeout (config `worker_timeout_s`) | kill, mark failed, requeue once |
 | tests pass but requirements unmet | verifier stage (roadmap) + acceptance scripts | targeted fix task referencing the finding |
 | silent cross-cutting regression | MUST-KEEP-WORKING contract suite run per wave | reject delivery, fix task |
-| regression introduced at a wave boundary | regression gate re-runs the project suite after every wave and diffs failing-test fingerprints (baseline in run.json) | wave marked failed, ledger event, compare file, fix task |
+| regression introduced at a wave boundary | regression gate re-runs the project suite after every wave and diffs failing-test fingerprints (baseline in the control-plane state store) | wave marked failed, ledger event, compare file, fix task |
+| worker rewrites gate state (`recon.json`, `run.json`, project `frozen.json`) | gate inputs live in `REPO_ROOT/state/runs/<hash-of-project>/`; the regression command is frozen at plan-load and never re-derived from the project | audit outcome unchanged; the project-side `run.json` is only a marked mirror |
+| a killed worker refuses to die | bounded `kill_grace_s` wait, then `proc.kill()`, then a recorded `kill_failed` outcome | task failed with an honest verdict instead of a hung wave |
 | tests pass but do not discriminate (accommodating tests) | discrimination check: the wave's owned test files re-run at the run's base commit in a throwaway git worktree | verdicts in the ledger + evidence bundle; `discrimination.mode: enforce` fails the wave |
 | suite weakened or deleted while staying green | executed-test inventory (skips/ignores excluded) compared against the baseline | wave marked failed (`suite shrank 13 -> 5`) |
 | uncomparable suite results (unknown runner, legacy baseline) | both runs red with no fingerprints on either side | fail closed under `regression.strict` (default); warning otherwise |
@@ -101,8 +103,8 @@ configured.
 ## Repository layout
 
 ```
-swarmflow/            control plane package (config, ledger, frontier, workers, plan,
-                      audit, regression, discrimination, procs, sweep, evidence, cli)
+swarmflow/            control plane package (config, ledger, runstate, frontier, workers,
+                      plan, audit, regression, discrimination, procs, sweep, evidence, cli)
 config/               swarmflow.yaml (models, concurrency, timeouts, paths)
 prompts/              planner, task brief, verifier, acceptance templates
 AGENTS.worker.md      canonical worker rules (copied into scaffolded projects)

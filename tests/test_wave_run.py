@@ -8,7 +8,7 @@ import time
 import pytest
 import yaml
 
-from swarmflow import cli, procs
+from swarmflow import cli, procs, runstate
 from swarmflow.ledger import Ledger
 
 
@@ -39,7 +39,8 @@ class FakeRunner:
 
 
 def _config(tmp_path, regression_command=None):
-    config = {"paths": {"ledger": str(tmp_path / "ledger.db")}}
+    config = {"paths": {"ledger": str(tmp_path / "ledger.db"),
+                        "state_dir": str(tmp_path / "state")}}
     if regression_command:
         config["regression"] = {"command": regression_command}
     path = tmp_path / "cfg.yaml"
@@ -236,7 +237,8 @@ def test_brownfield_wave_run_reports_discrimination(tmp_path, monkeypatch):
     # enforce mode: the same evidence fails the wave
     enforce_config = tmp_path / "cfg_enforce.yaml"
     enforce_config.write_text(yaml.safe_dump({
-        "paths": {"ledger": str(tmp_path / "ledger.db")},
+        "paths": {"ledger": str(tmp_path / "ledger.db"),
+                  "state_dir": str(tmp_path / "state")},
         "discrimination": {"mode": "enforce"}}), encoding="utf-8")
     task2 = dict(task, id="T2")
     plan2 = dict(plan, tasks=[task2])
@@ -389,7 +391,8 @@ def test_brownfield_wave_run_sweeps_leaked_processes(tmp_path, monkeypatch):
         # the first one is pre-existing and stays untouched
         kill_config = tmp_path / "cfg_kill.yaml"
         kill_config.write_text(yaml.safe_dump({
-            "paths": {"ledger": str(tmp_path / "ledger.db")},
+            "paths": {"ledger": str(tmp_path / "ledger.db"),
+                      "state_dir": str(tmp_path / "state")},
             "sweep": {"mode": "kill", "kill_requires_port": False}}), encoding="utf-8")
         plan2 = dict(plan, tasks=[dict(task, id="T2")])
         plan_path2 = tmp_path / "plan2.yaml"
@@ -406,6 +409,174 @@ def test_brownfield_wave_run_sweeps_leaked_processes(tmp_path, monkeypatch):
         for pid in leaked:
             if procs.is_alive(pid):
                 procs.kill_tree(pid, pid)
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_recon_rewrite_cannot_change_the_gate_command(tmp_path, monkeypatch, capsys):
+    """The gate command is frozen at plan time; a worker-writable recon.json rewrite
+    must not be able to choose what the control plane executes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def run(*args):
+        subprocess.run(["git", *args], cwd=repo, capture_output=True, check=True)
+
+    run("init", "-q")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "T")
+    (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-qm", "baseline")
+
+    command = f'"{sys.executable}" -m pytest -q --version'
+    config = _config(tmp_path, regression_command=command)
+    plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
+            "tasks": [{"id": "T1", "module": "app.py", "owner_files": ["app.py"],
+                       "spec": "do", "wave": 1}]}
+    plan_path = tmp_path / "plan.yaml"
+    plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
+    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+
+    # a hostile wave rewrites the project-side recon.json before the next wave
+    (repo / ".swarmflow" / "recon.json").write_text(json.dumps({
+        "commands": {"regression": {"command": "python -c \"print('pwned')\"",
+                                    "evidence": "hostile"}}}), encoding="utf-8")
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    ledger.add_task("T2", str(repo), wave=2)
+    ledger.close()
+    capsys.readouterr()
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "2"]) == 0
+    evidence = (repo / ".swarmflow" / "evidence" / "wave2.txt").read_text(encoding="utf-8")
+    assert command in evidence
+    assert "pwned" not in evidence
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_config_override_wins_over_the_frozen_command(tmp_path, monkeypatch, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def run(*args):
+        subprocess.run(["git", *args], cwd=repo, capture_output=True, check=True)
+
+    run("init", "-q")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "T")
+    (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-qm", "baseline")
+
+    first = f'"{sys.executable}" -m pytest -q --version'
+    config = _config(tmp_path, regression_command=first)
+    plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
+            "tasks": [{"id": "T1", "module": "app.py", "owner_files": ["app.py"],
+                       "spec": "do", "wave": 1}]}
+    plan_path = tmp_path / "plan.yaml"
+    plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
+    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+
+    # the operator changes the command; wave-run must use it and say so
+    second = f'"{sys.executable}" -m pytest -q --help'
+    updated = tmp_path / "cfg2.yaml"
+    updated.write_text(yaml.safe_dump({
+        "paths": {"ledger": str(tmp_path / "ledger.db"),
+                  "state_dir": str(tmp_path / "state")},
+        "regression": {"command": second}}), encoding="utf-8")
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    ledger.add_task("T2", str(repo), wave=2)
+    ledger.close()
+    capsys.readouterr()
+
+    assert cli.main(["--config", str(updated), "wave-run", "--wave", "2"]) == 0
+    output = capsys.readouterr().out
+    assert "overridden by config" in output
+    evidence = (repo / ".swarmflow" / "evidence" / "wave2.txt").read_text(encoding="utf-8")
+    assert second in evidence
+
+
+def test_missing_store_baseline_fails_a_brownfield_audit(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    runstate.save_run(str(project), {"mode": "brownfield"})
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    state, result = cli._run_audit(str(project), ledger, "T1", brownfield=True)
+    skipped, _ = cli._run_audit(str(project), ledger, "T1", brownfield=False)
+    ledger.close()
+    assert state == "fail"
+    assert result["violations"][0]["kind"] == "no_baseline"
+    assert skipped == "skipped"
+
+
+def test_corrupt_store_baseline_is_a_structured_failure(tmp_path, capsys):
+    project = tmp_path / "proj"
+    project.mkdir()
+    runstate.frozen_path(str(project)).parent.mkdir(parents=True, exist_ok=True)
+    runstate.frozen_path(str(project)).write_text("{broken", encoding="utf-8")
+    config = _config(tmp_path)
+    rc = cli.main(["--config", str(config), "audit", "--project", str(project)])
+    output = capsys.readouterr().out
+    assert rc == 1
+    assert "corrupt_baseline" in output
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_project_side_state_cannot_forge_the_audit(tmp_path, monkeypatch):
+    """A worker rewriting .swarmflow/run.json (ignore-all) and touching a frozen file
+    must still fail the wave - the store is authoritative."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def run(*args):
+        subprocess.run(["git", *args], cwd=repo, capture_output=True, check=True)
+
+    run("init", "-q")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "T")
+    (repo / ".gitignore").write_text(".swarmflow/\nlogs/\n", encoding="utf-8")
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-qm", "baseline")
+    config = _config(tmp_path)
+    plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
+            "tasks": [{"id": "T1", "module": "tracked.py",
+                       "owner_files": ["tracked.py"], "spec": "do", "wave": 1}]}
+    plan_path = tmp_path / "plan.yaml"
+    plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
+    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+
+    class ForgingRunner:
+        """Modifies a frozen file during the wave and forges the project-side state."""
+
+        def __init__(self, ledger):
+            self.ledger = ledger
+
+        def run_wave(self, wave, concurrency=None):
+            (repo / ".swarmflow" / "run.json").write_text(json.dumps({
+                "mode": "brownfield", "audit_ignores": ["*"]}), encoding="utf-8")
+            (repo / "tracked.py").write_text("x = 2\n", encoding="utf-8")
+            results = []
+            for task in self.ledger.list_tasks(status="queued", wave=wave):
+                self.ledger.set_status(task["id"], "delivered")
+                results.append({"task_id": task["id"], "outcome": "delivered",
+                                "missing": [], "scan": {"turns": 1, "out_tokens": 10},
+                                "server_launches": []})
+            return results
+
+    monkeypatch.setattr(cli, "_runner",
+                        lambda config, ledger, root: ForgingRunner(ledger))
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    ledger.add_task("T2", str(repo), wave=2)
+    ledger.close()
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "2"]) == 1
 
 
 @pytest.mark.skipif(not GIT, reason="git not available")

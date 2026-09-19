@@ -7,6 +7,7 @@ import pytest
 
 from swarmflow.evidence import bundle, write_bundle
 from swarmflow.ledger import Ledger
+from swarmflow import runstate
 
 
 def _git_available():
@@ -18,6 +19,31 @@ def _git_available():
 
 
 GIT = _git_available()
+
+
+def test_corrupt_baseline_does_not_crash_the_bundle(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    runstate.frozen_path(str(repo)).parent.mkdir(parents=True, exist_ok=True)
+    runstate.frozen_path(str(repo)).write_text("{broken", encoding="utf-8")
+    ledger = Ledger(str(tmp_path / "l.db"))
+    text = bundle(str(repo), ledger)
+    ledger.close()
+    assert "corrupt_baseline" in text
+
+
+def test_bundle_honours_extra_ignores(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    runstate.save_frozen(str(repo), {"mode": "greenfield", "files": {},
+                                     "ignores": [], "owners": {}})
+    (repo / "stray.weird").write_text("x", encoding="utf-8")
+    ledger = Ledger(str(tmp_path / "l.db"))
+    without = bundle(str(repo), ledger)
+    with_ignores = bundle(str(repo), ledger, ignores=["*.weird"])
+    ledger.close()
+    assert "stray.weird" in without
+    assert "stray.weird" not in with_ignores
 
 
 @pytest.mark.skipif(not GIT, reason="git not available")
@@ -42,13 +68,13 @@ def test_bundle_contains_all_sections(tmp_path):
                           text=True, check=True).stdout.strip()
 
     (repo / ".swarmflow").mkdir()
-    (repo / ".swarmflow" / "run.json").write_text(json.dumps({
+    runstate.save_run(str(repo), {
         "mode": "brownfield", "branch": "swarmflow/demo", "base_sha": head,
         "regression": {"baseline": {"rc": 0, "failures": None,
                                     "tests_ran": 3,
                                     "fingerprints": ["tests/test_app.py::test_ok"],
                                     "command": "python -m pytest -q"}},
-    }), encoding="utf-8")
+    })
     (repo / ".swarmflow" / "recon.json").write_text(json.dumps({
         "git": {"is_git": True, "branch": "main", "head": head, "commits": 1,
                 "dirty_tracked": [], "untracked_count": 0},

@@ -12,6 +12,7 @@ from pathlib import Path
 from .audit import audit
 from .recon import digest as recon_digest, load_recon
 from .workers import scan_trace
+from . import runstate
 
 MANIFEST_PATHS = ["package.json", "package-lock.json", "pyproject.toml",
                   "requirements.txt", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock"]
@@ -31,16 +32,10 @@ def _git(project_root: str, *args: str, timeout: int = 60):
 
 
 def _run_state(project_root: str) -> dict:
-    path = Path(project_root) / ".swarmflow" / "run.json"
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except ValueError:
-        return {}
+    return runstate.load_run(project_root)
 
 
-def bundle(project_root: str, ledger) -> str:
+def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
     """Assemble the evidence bundle as markdown."""
     root = Path(project_root)
     state = _run_state(str(root))
@@ -91,7 +86,12 @@ def bundle(project_root: str, ledger) -> str:
         lines.append("")
 
     lines.append("## Audit")
-    result = audit(str(root), ignores=state.get("audit_ignores") or [])
+    try:
+        result = audit(str(root), ignores=(state.get("audit_ignores") or [])
+                       + list(ignores or []))
+    except Exception as exc:                      # the bundle must still render
+        result = {"ok": False, "violations": [
+            {"kind": "audit-error", "path": "", "detail": str(exc)[:300]}]}
     lines.append(f"- ok: {result['ok']}")
     lines.append("- note: .gitignore additions (.swarmflow/, logs/) are made by the "
                  "brownfield preflight, before the first freeze")
@@ -221,8 +221,8 @@ def bundle(project_root: str, ledger) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_bundle(project_root: str, ledger) -> Path:
-    text = bundle(project_root, ledger)
+def write_bundle(project_root: str, ledger, ignores: list | None = None) -> Path:
+    text = bundle(project_root, ledger, ignores=ignores)
     out = Path(project_root) / ".swarmflow" / "evidence" / "bundle.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")

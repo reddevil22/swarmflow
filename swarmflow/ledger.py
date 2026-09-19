@@ -76,6 +76,13 @@ class Ledger:
     def close(self) -> None:
         self.conn.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.close()
+        return False
+
     def add_task(self, task_id: str, project: str, wave: int = 1, module: str = "",
                  owner_files: list | None = None, acceptance: list | None = None,
                  spec_path: str = "", thinking: str = "high",

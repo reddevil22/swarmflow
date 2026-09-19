@@ -8,6 +8,7 @@ cleanup removes linked directories itself and only then deletes the worktree.
 
 import fnmatch
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -42,9 +43,14 @@ def _skipped(wave: int, reason: str) -> dict:
             "files": [], "copied": [], "runs": [], "counts": {}}
 
 
+CMD_UNSAFE_RE = re.compile(r'[&|^<>%" ]')
+
+
 def _link_dir(source: Path, target: Path) -> bool:
     try:
         if os.name == "nt":
+            if CMD_UNSAFE_RE.search(str(source)) or CMD_UNSAFE_RE.search(str(target)):
+                return False   # cmd.exe would re-parse these paths
             proc = subprocess.run(
                 ["cmd", "/c", "mklink", "/J", str(target), str(source)],
                 capture_output=True, text=True, timeout=60)

@@ -1,5 +1,6 @@
 """Plan loading, validation, scaffolding and enqueueing."""
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -7,6 +8,20 @@ from pathlib import Path
 import yaml
 
 REQUIRED_TASK_KEYS = {"id", "module", "owner_files"}
+ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+THINKING_LEVELS = {"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+
+def _path_problem(value) -> str | None:
+    """Return an error when a value is not a safe project-relative path."""
+    if not isinstance(value, str) or not value.strip():
+        return "must be a non-empty string"
+    text = value.replace("\\", "/")
+    if text.startswith("/") or re.match(r"^[A-Za-z]:", text):
+        return "must be relative to the project root"
+    if ".." in text.split("/"):
+        return "must not contain '..' segments"
+    return None
 
 
 def load_plan(path: str) -> dict:
@@ -22,6 +37,9 @@ def validate_plan(plan: dict) -> list[str]:
     tasks = plan.get("tasks")
     if not tasks:
         return ["plan has no tasks"]
+    project_name = plan.get("project_name")
+    if project_name is not None and not ID_RE.match(str(project_name)):
+        errors.append(f"project_name must match {ID_RE.pattern} (it names the run branch)")
     seen_ids = set()
     owner_map: dict[str, str] = {}
     for task in tasks:
@@ -30,20 +48,41 @@ def validate_plan(plan: dict) -> list[str]:
         if missing:
             errors.append(f"{task_id}: missing keys {sorted(missing)}")
             continue
+        if not ID_RE.match(str(task_id)) or ".." in str(task_id):
+            errors.append(f"{task_id}: id must match {ID_RE.pattern} without '..'")
         if task_id in seen_ids:
             errors.append(f"{task_id}: duplicate id")
         seen_ids.add(task_id)
         if "test_command" in task and not isinstance(task["test_command"], str):
             errors.append(f"{task_id}: test_command must be a string")
+        thinking = task.get("thinking")
+        if thinking is not None and thinking not in THINKING_LEVELS:
+            errors.append(f"{task_id}: thinking must be one of {sorted(THINKING_LEVELS)}")
+        module = task.get("module")
+        if module is not None and not isinstance(module, str):
+            errors.append(f"{task_id}: module must be a string")
+        acceptance = task.get("acceptance")
+        if acceptance is not None and (
+                not isinstance(acceptance, list)
+                or not all(isinstance(item, str) for item in acceptance)):
+            errors.append(f"{task_id}: acceptance must be a list of strings")
         files_to_read = task.get("files_to_read")
         if files_to_read is not None and (
                 not isinstance(files_to_read, list)
                 or not all(isinstance(item, str) for item in files_to_read)):
             errors.append(f"{task_id}: files_to_read must be a list of strings")
+        for file_name in files_to_read or []:
+            problem = _path_problem(file_name)
+            if problem:
+                errors.append(f"{task_id}: files_to_read entry {file_name!r} {problem}")
         owners = task.get("owner_files") or []
         if not owners:
             errors.append(f"{task_id}: owner_files is empty (shared files belong to integration)")
         for file_name in owners:
+            problem = _path_problem(file_name)
+            if problem:
+                errors.append(f"{task_id}: owner_files entry {file_name!r} {problem}")
+                continue
             if file_name in owner_map and owner_map[file_name] != task_id:
                 errors.append(
                     f"ownership overlap: {file_name} claimed by {owner_map[file_name]} and {task_id}"

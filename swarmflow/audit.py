@@ -16,14 +16,14 @@ import os
 import subprocess
 from pathlib import Path
 
+from . import runstate
+
 DEFAULT_IGNORES = [
     ".git", "node_modules", "dist", "build", "coverage", "logs", "state",
     ".swarmflow", "__pycache__", ".pytest_cache", "*.pyc", "*.log",
     "target", ".venv", "venv", "vendor", ".tox", ".next", ".mypy_cache",
     ".ruff_cache", ".coverage", "*.tsbuildinfo", "*.egg-info",
 ]
-
-BASELINE_REL = ".swarmflow/frozen.json"
 
 
 def _hash_file(path: Path) -> str:
@@ -54,8 +54,6 @@ def _iter_files(root: Path, ignores: list[str]) -> dict:
                 continue
             full = Path(dirpath) / name
             rel = full.relative_to(root).as_posix()
-            if rel == BASELINE_REL:
-                continue
             try:
                 files[rel] = _hash_file(full)
             except OSError:
@@ -90,25 +88,27 @@ def freeze(project_root: str, owners: dict, ignores: list[str] | None = None,
         files = _iter_files(root, merged)
         baseline = {"mode": "greenfield", "files": files, "ignores": merged,
                     "owners": owner_map}
-    path = root / BASELINE_REL
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(baseline, indent=2, sort_keys=True), encoding="utf-8")
+    runstate.save_frozen(str(root), baseline)
     return {"frozen_files": len(baseline["files"]), "owned": len(owner_map),
-            "baseline": str(path), "mode": mode}
+            "baseline": str(runstate.frozen_path(str(root))), "mode": mode}
 
 
 def audit(project_root: str, ignores: list[str] | None = None) -> dict:
     """Compare the current tree against the frozen baseline.
 
     Violation kinds: deleted_frozen, modified_frozen, added_unowned, no_baseline,
-    no_git. Owned files (from the baseline owner map) are exempt from all checks.
+    corrupt_baseline, no_git. Owned files (from the baseline owner map) are exempt.
     """
     root = Path(project_root).resolve()
-    baseline_path = root / BASELINE_REL
-    if not baseline_path.exists():
+    baseline = runstate.load_frozen(str(root))
+    if baseline is None:
+        path = runstate.frozen_path(str(root))
+        if path.exists():
+            return {"ok": False, "violations": [
+                {"kind": "corrupt_baseline", "path": str(path),
+                 "detail": "the frozen baseline is unreadable; re-run freeze"}]}
         return {"ok": False, "violations": [
-            {"kind": "no_baseline", "path": BASELINE_REL, "detail": "run freeze first"}]}
-    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+            {"kind": "no_baseline", "path": str(path), "detail": "run freeze first"}]}
     if baseline.get("mode") == "brownfield":
         return _audit_brownfield(root, baseline, ignores)
     frozen = baseline.get("files", {})

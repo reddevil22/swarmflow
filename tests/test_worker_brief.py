@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from swarmflow.audit import _hash_file
+from swarmflow import runstate
 from swarmflow.config import REPO_ROOT
 from swarmflow.ledger import Ledger
 from swarmflow.workers import WorkerRunner, delivery_changed, stack_rules_block
@@ -48,8 +49,7 @@ def test_greenfield_defaults_to_node_rules_with_package_json(tmp_path):
 def test_brownfield_prompt_injects_rules_stack_and_regression(tmp_path):
     project = tmp_path / "b"
     (project / ".swarmflow").mkdir(parents=True)
-    (project / ".swarmflow" / "run.json").write_text(
-        json.dumps({"mode": "brownfield"}), encoding="utf-8")
+    runstate.save_run(str(project), {"mode": "brownfield"})
     (project / ".swarmflow" / "recon.json").write_text(json.dumps({
         "stacks": [{"stack": "python", "evidence": "pyproject.toml"}],
         "commands": {"regression": {"command": "python -m pytest -q",

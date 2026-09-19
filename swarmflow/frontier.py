@@ -143,8 +143,8 @@ class CommandCodeBackend:
         self.timeout_s = timeout_s
 
     def complete(self, prompt, *, max_turns=1, model=None, effort=None, timeout=None):
-        args = [
-            os.environ.get("COMSPEC", "cmd.exe"), "/c", self.cmd_path,
+        prefix = build_cli_command(self.cmd_path, "node")
+        args = prefix + [
             "-p", "--output-format", "json", "--skip-onboarding", "-t",
             "--model", model or self.model,
             "--max-turns", str(max_turns),

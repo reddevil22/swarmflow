@@ -4,6 +4,7 @@ state/
 logs/
 *.pyc
 config/swarmflow.yaml
+.commandcode/
 *.egg-info/
 build/
 dist/

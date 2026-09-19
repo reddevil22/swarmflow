@@ -7,6 +7,27 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- **Control-plane state store** (`swarmflow/runstate.py`): gate state (run record,
+  frozen baseline, the resolved regression command) lives outside the worker-writable
+  project at `<state_dir>/runs/<hash-of-project>/` (default `<repo>/state/`). The
+  regression command is frozen at plan-load and never re-derived from
+  `.swarmflow/recon.json`; a config `regression.command` change still wins and is
+  printed. Pre-upgrade runs are adopted once (structural fields only - never
+  `audit_ignores`/`regression`); the project-side `run.json` is a marked, unread mirror.
+- **Supervision invariant**: one supervisor loop polls every live worker handle with its
+  own deadline (a slow worker no longer leaves its siblings unpoliced), kills are
+  bounded (`kill_grace_s`, then `proc.kill()`, then an honest `kill_failed` outcome
+  instead of a hang), interrupted waves tear down live sessions, and spawn/send
+  failures either abort the wave with a `spawn-failed` event (configuration errors) or
+  fail just that task (`spawn_failed`) while the wave continues.
+- **Input validation**: plan ids (`^[A-Za-z0-9._-]{1,64}$`, no `..`), project names,
+  `owner_files`/`files_to_read` (relative, contained), `thinking` (Pi's real levels),
+  `acceptance` shapes; config values that reach the CLI are charset-checked and
+  `.cmd`/`.bat` executables routed through `cmd.exe` may not contain spaces or shell
+  metacharacters; junction creation refuses paths `cmd.exe` would re-parse.
+- `Ledger` is a context manager; `audit` failures (corrupt baseline, missing baseline on
+  a brownfield run, unexpected exceptions) fail the wave structurally instead of
+  escaping it, and `swarmflow evidence` honours `audit.ignore_extra` like the wave gate.
 - **Brownfield support** (existing repositories, regression-safe):
   - `swarmflow recon` surveys a repo deterministically (stacks, evidence-backed test/
     build/lint commands, git state with tracked-only dirtiness, test inventory).

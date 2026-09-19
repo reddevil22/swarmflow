@@ -51,6 +51,8 @@ worker:
   timeout_s: 2400         # per-session wall clock limit (seconds)
   max_turns: 45           # supervisor kills workers above this turn count
   max_output_tokens: 32768  # model output cap, used for spiral detection
+  poll_s: 15.0            # supervisor tick: every live handle is checked each tick
+  kill_grace_s: 30.0      # bounded wait after a tree kill; then kill_failed is recorded
 
 swarm:
   concurrency: 8          # measured sweet spot for one local endpoint: 8-10
@@ -62,6 +64,9 @@ swarm:
 paths:
   logs_dir: "logs"        # traces, relative to the target project root
   ledger: "state/ledger.db"
+  state_dir: "state"      # control-plane run store (outside any target project);
+                          # holds run.json + frozen.json per project - a worker cannot
+                          # reach it, unlike .swarmflow/ inside the project
 
 audit:
   # Extra ignore patterns for the greenfield (walk-based) audit. Brownfield runs
