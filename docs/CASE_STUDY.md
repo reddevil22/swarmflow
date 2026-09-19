@@ -78,3 +78,75 @@ What the run caught (pipeline fixes applied):
 Roadmap from this run: unit-level `@Query('done')` test; generated e2e tests should
 avoid presence-only assertions; assert error message text where the contract includes
 it; post-wave orphan-process sweep.
+
+## Brownfield validation run 2 (2026-09-19, `xstate-orchestration-demo`)
+
+Third full validation, and the first on a repository nobody prepared for the pipeline:
+a real React 19 + XState v5 demo with Vitest (machine + component layers) and a
+Playwright e2e suite, clean working tree, and its own feature backlog in
+`docs/FEATURES.md`. Branch `swarmflow/xstate-orch`, base `c6264f3`, run commits
+`880a52d` -> `d05827a` -> `f38212b`.
+
+Delta chosen from the project's own backlog: (a) repair the red component-test layer
+(9/9 failing with `TypeError: React.act is not a function`), (b) implement the deferred
+"multi-tab history sync" feature (BroadcastChannel), (c) prove it at the browser layer.
+
+### Pipeline as executed
+| Wave | Tasks | Attempts | Turns | Outcome |
+|---|---|---|---|---|
+| 1 (killed) | act-repair, history-sync | - | 2 / 5 | act-repair stalled on a mis-briefed 400 KB `node_modules` read; wave killed, spec reworked |
+| 1 (retry) | act-repair, history-sync | 2 / 3 | 16 / 48 | act-repair delivered; history-sync hit the turn cap (spiral: 8 `debug*.test.ts` scratch files, cross-file type breakage) |
+| 2 | history-sync-e2e, sync-typecheck-fix | 1 / 1 | 42 / 16 | typecheck restored project-wide; e2e delivered but hollow (see below) |
+| 3 | sync-live-fix | 2 (spiral -> auto-retry) | 33K-token single turn -> 42 | delivered, again hollow; orchestrator repaired |
+
+### Final state
+`npm run typecheck` clean; **34 unit tests** (26 original + 8 sync) and **13 e2e tests**
+(10 original + 3 sync) green; evidence bundle 46 KB; four commits on the run branch;
+base preserved; no leaked listeners at exit. The act fix is scoped to the vitest
+process only, so the production build path is unchanged.
+
+### What this run caught
+1. **Environment gremlin #3 (same family as taskdock)**: the machine exports
+   `NODE_ENV=production`, which makes react resolve under production export conditions
+   where `act` is absent - and the RTL component layer dies. Recon now records the
+   ambient `NODE_ENV` and the digest warns about it. The pipeline's confidence came
+   from a reproduced lever (`NODE_ENV=development npm test` -> 26/26), not from a guess.
+2. **The over-broad fix lesson**: forcing development mode unconditionally in
+   `vite.config.ts` also changed `vite build` (the e2e bundle), silently breaking an
+   untouched URL-sync test. Caught only by full-suite verification; fixed by scoping the
+   override to the vitest process. Acceptance criteria for config edits must include
+   every other consumer of that config.
+3. **Tests written to accommodate broken code - three separate times**:
+   (a) the unit fake for the sync channel delivered messages to *itself*, matching the
+   broken wrapper and masking a dead feature; (b) the first e2e spec "simulated" sync by
+   writing localStorage and reloading, with comments claiming it verified the channel;
+   (c) after a cosmetic fix, the rewritten e2e still passed by opening tab B *after* the
+   search. Discrimination discipline (a two-minute two-page probe, then break/restore
+   verification: bridge disabled -> 3/3 fail, restored -> 3/3 pass) exposed all three.
+4. **Cross-file type ripple**: the feature's machine-type change broke sibling call
+   sites (`spawn('history')`, single-arg `createActor`) in files the task did not own.
+   A wave-2 type-compat task (owning only the machine + its test) restored a clean
+   project-wide typecheck without touching the siblings.
+5. **Gate hole - red-baseline tolerance is count-only**: when the recorded baseline is
+   already red, a red->red transition with a *different* failure cause (here: a flaky
+   URL-sync test, then a broken typecheck) passes as "no new failures". The gate needs
+   stage fingerprints (which stage failed + error signatures), not just counts.
+   Roadmap: per-stage exit codes and failure fingerprints in the regression record.
+6. **Stale preview server**: Playwright's `reuseExistingServer: true` kept an old
+   `vite preview` alive on :4173, so several test runs (including a worker's) silently
+   exercised a stale bundle and produced wrong conclusions. Verification now includes a
+   listener check; ties directly into the post-wave process sweep roadmap.
+7. **Frozen-config vs repair tasks**: the legitimate repair of `vite.config.ts` fails
+   the freeze audit (`modified_frozen`), because the policy has no sanctioned exception
+   path. Roadmap: per-task freeze allow-lists recorded in `run.json`.
+8. **Spiral retry worked**: wave 3 attempt 1 emitted a single ~33K-token message
+   (cap), was detected and auto-retried at lower thinking with a conciseness directive.
+
+### Orchestrator interventions (operator-scope, all listed)
+Root-cause recon for the `act` failure (including three failed shim spikes); spec
+rework after the killed wave; the `defaultSyncChannel` handler bridge; the true
+live-delivery e2e rewrite; scoping the dev-mode override to vitest; killing the stale
+preview and an orphaned taskdock `ts-node` from the previous session (port 3000);
+break/restore discrimination checks. The frontier verifier pass was not run this time -
+orchestrator verification covered the same ground, and the gap is noted honestly.
+

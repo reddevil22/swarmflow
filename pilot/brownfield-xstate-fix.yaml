@@ -1,0 +1,53 @@
+# Wave-2 fix plan: restore project-wide typecheck for the history-sync delivery.
+project_name: xstate-orch
+project: C:\Users\redde\xstate-orchestration-demo
+mode: brownfield
+tasks:
+  - id: sync-typecheck-fix
+    module: src/machines
+    owner_files:
+      - src/machines/historyMachine.ts
+      - src/machines/historyMachine.test.ts
+    files_to_read:
+      - src/machines/historyMachine.ts
+      - src/machines/historyMachine.test.ts
+      - src/machines/searchMachine.ts
+      - src/machines/searchMachine.test.ts
+    thinking: medium
+    wave: 2
+    test_command: npm run typecheck
+    spec: |
+      `npm run typecheck` currently fails with 5 errors introduced by the history-sync
+      change; tests are green (34/34). Restore a clean project-wide typecheck WITHOUT
+      changing runtime behavior and WITHOUT touching files you do not own.
+
+      Errors to fix:
+      - src/machines/historyMachine.test.ts: unused `vi`, unused `SyncChannelFactory`
+        import, unused `prefix` variable; two calls where TS now says
+        "Expected 2 arguments, but got 1".
+      - src/machines/searchMachine.ts:151 `spawn('history')` inside `context` now errors
+        with "Argument of type 'string' is not assignable to parameter of type
+        'AnyActorLogic'" (searchMachine registers history in `actors` - read the file).
+      - src/machines/searchMachine.test.ts:289 and :296 `createActor(historyMachine)`
+        with a single argument now errors with "Expected 2 arguments, but got 1".
+
+      The root cause is historyMachine's inferred machine type changing: making `input`
+      optional-but-present in a way that forces `createActor` options, and altering the
+      actor-provided typing used by `spawn('history')`. Make the exported machine type
+      BACKWARD COMPATIBLE with the previous call shapes while keeping the new sync
+      features and tests intact:
+      - input must be fully optional (no required fields), so `createActor(historyMachine)`
+        stays valid;
+      - avoid changing how the machine participates in `actors` registration such that
+        `spawn('history')` loses its typing (inspect searchMachine.ts to see the exact
+        registration and adapt historyMachine's types, e.g. keep the machine's context/
+        event/input generics in a shape the provided-actor map still accepts);
+      - remove the leftover unused imports/variables in your own test file.
+
+      Do NOT modify searchMachine.ts or searchMachine.test.ts - if you believe a change
+      there is unavoidable, STOP and report BLOCKED with the evidence instead.
+      Also keep `passWithNoTests` behavior and all 34 tests green.
+    acceptance:
+      - npm run typecheck exits 0 (whole project)
+      - npm test passes 34/34
+      - no runtime behavior change (existing tests untouched except import cleanup)

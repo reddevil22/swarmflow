@@ -1,0 +1,65 @@
+# Wave-3 fix plan: make BroadcastChannel history sync actually work live.
+project_name: xstate-orch
+project: C:\Users\redde\xstate-orchestration-demo
+mode: brownfield
+tasks:
+  - id: sync-live-fix
+    module: src/machines + e2e
+    owner_files:
+      - src/machines/historyMachine.ts
+      - src/machines/historyMachine.test.ts
+      - e2e/history-sync.spec.ts
+    files_to_read:
+      - src/machines/historyMachine.ts
+      - src/machines/historyMachine.test.ts
+      - e2e/history-sync.spec.ts
+      - e2e/search.spec.ts
+    thinking: medium
+    wave: 3
+    test_command: npx playwright test e2e/history-sync.spec.ts
+    spec: |
+      Live multi-tab sync is BROKEN in a real browser; the current e2e spec hides it by
+      simulating a localStorage write and reloading. Fix the mechanism, then prove it
+      live.
+
+      THE BUG (operator diagnosis, verified): defaultSyncChannel() wraps the real
+      BroadcastChannel in a plain object whose `onmessage` is a DATA property
+      (initialized to null). The machine's subscribeChannel action assigns
+      `channel.onmessage = handler`, which only sets the wrapper's property - the real
+      BroadcastChannel never receives a handler, so no message is ever delivered.
+      The unit-test fake had the same defect (it delivered messages to ITSELF), which is
+      why the tests stayed green.
+
+      FIXES REQUIRED:
+      1) historyMachine.ts: make the wrapper forward onmessage to the underlying
+         BroadcastChannel (e.g., a get/set accessor pair on the returned object that
+         read/write `ch.onmessage`; convert the real event to the structural
+         { data: unknown } shape). Keep the SyncChannel interface and everything else
+         intact. Also double-check `close()`/postMessage forwarding.
+      2) historyMachine.test.ts: make the fake channel model REAL BroadcastChannel
+         semantics - a shared registry keyed by channel name: postMessage delivers to
+         every OTHER live instance with the same name, never to the posting instance,
+         and close() unregisters. With the old buggy wrapper this fake must FAIL (that
+         is the point: the test must be able to catch the bug).
+      3) e2e/history-sync.spec.ts: rewrite around the REAL mechanism:
+         - open page B in the same browser context, THEN search in page A, and assert
+           page B's history panel shows the entry WITHOUT any reload (live delivery);
+         - keep the reload-persistence assertions as a secondary check;
+         - remove the localStorage-simulation blocks and the misleading comments that
+           claim Playwright isolates channels across pages.
+      VERIFIED FACT (operator probe, do not re-derive): BroadcastChannel DOES cross
+      pages in this Playwright setup; a probe with two pages in one context delivered
+      ["hello-from-a"] to page B.
+
+      CONSTRAINTS:
+      - No debug/scratch files; stay under ~25 tool calls.
+      - npm test must stay green (34 tests) and no changes outside the owned files.
+      - NOTE: e2e/search.spec.ts:126 (URL sync) is a pre-existing intermittent flake;
+        if it fails in a full run, re-run once to confirm and report - do NOT modify
+        that file.
+    acceptance:
+      - npx playwright test e2e/history-sync.spec.ts passes with at least one
+        no-reload live-sync assertion
+      - npm test passes 34/34 and npm run typecheck stays clean
+      - with the old wrapper restored, the new unit fake would fail (cross-instance
+        delivery semantics)
