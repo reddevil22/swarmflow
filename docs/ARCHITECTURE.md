@@ -63,10 +63,22 @@ own tests missed requirement gaps and edge cases roughly half the time. Verifica
 
 ## Frontier integration
 
-`FrontierClient` shells out to Command Code headless (`cmd -p --output-format json`,
-model `deepseek/deepseek-v4-flash`), feeding prompts via stdin and parsing the NDJSON
-`{"type":"result"}` line. Single-turn by default (`--max-turns 1`) for planner/verdict
-calls; higher turn budgets reserved for frontier rescue workers (roadmap).
+Frontier roles (plan / verify / accept) are text-in / text-out completions served by a
+**selectable backend** (`swarmflow/frontier.py`), so no specific vendor CLI is required:
+
+| backend | what it runs | notes |
+|---|---|---|
+| `openai` | any OpenAI-compatible `/chat/completions` endpoint (OpenRouter, DeepSeek API, Groq, Ollama, vLLM, ...) | stdlib-only client, no SDK dependency; `extra_body` passes vendor knobs |
+| `commandcode` | Command Code CLI headless (`cmd -p --output-format json`) | NDJSON `{"type":"result"}` parsed for text + usage |
+| `cli` | any terminal agent CLI via an argv template | tokens support `{prompt_file}` / `{prompt}`; `output: text\|json` with optional dotted `result_path` |
+| `pi` | Pi itself with a provider model configured in Pi | final answer extracted from the session trace |
+
+`backend: auto` (default) resolves deterministically: explicit `frontier.command` wins,
+then `frontier.base_url`, then a configured or PATH-discovered Command Code CLI. All
+backends return the same normalized dict (`ok, backend, subtype, final_text, usage,
+duration_ms, session_id, exit_code`); `max_turns`/`effort` are best-effort and ignored
+by single-shot HTTP backends. `swarmflow smoke-frontier` verifies whichever backend is
+configured.
 
 ## Repository layout
 

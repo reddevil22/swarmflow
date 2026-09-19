@@ -6,6 +6,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+- Frontier access is backend-agnostic: `frontier.backend` selects `openai` (any
+  OpenAI-compatible `/chat/completions` API via a stdlib-only client), `commandcode`,
+  a generic `cli` adapter for any terminal agent CLI (argv template + text/JSON
+  extraction), or `pi`; `auto` resolves from what is configured. The Command Code CLI
+  is no longer required. All backends return one normalized result shape, and
+  `smoke-frontier` reports which backend is active.
+
 ## [0.1.0] - 2026-09-19
 
 ### Added

@@ -12,7 +12,18 @@ EXAMPLE_CONFIG_PATH = REPO_ROOT / "config" / "swarmflow.example.yaml"
 
 DEFAULTS = {
     "frontier": {
-        "cmd_path": "",
+        "backend": "auto",   # auto | openai | commandcode | cli | pi
+        "base_url": "",      # openai backend: any OpenAI-compatible API
+        "api_key": "",       # supports "${ENV_VAR}" references
+        "system_prompt": "",
+        "extra_body": {},    # merged verbatim into chat completion requests
+        "cmd_path": "",      # commandcode backend: CLI path (auto-detected when empty)
+        "command": [],       # cli backend: argv template with {prompt_file} / {prompt}
+        "output": "text",    # cli backend: text | json
+        "result_path": "",   # cli backend: dotted path into JSON output
+        "pi_cli": "",        # pi backend: Pi executable (auto-detected when empty)
+        "node": "node",
+        "thinking": "",
         "model": "deepseek/deepseek-v4-flash",
         "effort": None,
         "timeout_s": 300,

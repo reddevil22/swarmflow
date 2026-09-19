@@ -5,9 +5,10 @@
 
 swarmflow coordinates many local agent sessions (e.g. [Pi](https://pi.dev) against a
 local OpenAI-compatible model server) to build a project in parallel waves, while a
-frontier model (deepseek-v4-flash via Command Code headless mode) handles planning,
-verification and acceptance. A SQLite ledger is the single source of truth; every
-claim is verified by artifacts, never by exit codes.
+frontier model handles planning, verification and acceptance. Frontier access is
+backend-agnostic: any OpenAI-compatible API (stdlib client, no SDK), the Command Code
+CLI, a generic adapter for any terminal agent CLI, or Pi itself. A SQLite ledger is the
+single source of truth; every claim is verified by artifacts, never by exit codes.
 
 ## Documentation
 - [Architecture](docs/ARCHITECTURE.md) - roles, state machine, failure taxonomy, capacity numbers
@@ -21,7 +22,7 @@ claim is verified by artifacts, never by exit codes.
 pip install -e ".[dev]"          # stdlib + pyyaml; pytest for development
 swarmflow init                   # writes config/swarmflow.yaml from the example
 $EDITOR config/swarmflow.yaml    # set your worker model id and CLI paths
-swarmflow smoke-frontier         # frontier reachability (Command Code CLI + auth)
+swarmflow smoke-frontier         # configured frontier backend reachability
 swarmflow smoke-worker           # local worker reachability (Pi + model server)
 swarmflow plan-load --plan examples/smoke-plan.yaml --project <path>
 swarmflow freeze --project <path>

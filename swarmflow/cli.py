@@ -8,23 +8,15 @@ import tempfile
 from pathlib import Path
 
 from .audit import audit, freeze
-from .config import (DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, REPO_ROOT,
-                     load_config, resolve_executable)
-from .frontier import FrontierClient, FrontierError
+from .config import DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, REPO_ROOT, load_config
+from .frontier import FrontierError, build_backend
 from .ledger import Ledger
 from .plan import enqueue_plan, load_plan, scaffold, validate_plan
 from .workers import WorkerRunner, scan_trace
 
 
-def _frontier(config) -> FrontierClient:
-    frontier = config["frontier"]
-    cmd_path = frontier.get("cmd_path") or resolve_executable(["commandcode", "cmdc"])
-    return FrontierClient(
-        cmd_path=cmd_path,
-        model=frontier["model"],
-        effort=frontier.get("effort"),
-        timeout_s=float(frontier["timeout_s"]),
-    )
+def _frontier(config) -> object:
+    return build_backend(config["frontier"])
 
 
 def _runner(config, ledger, project_root: str) -> WorkerRunner:
@@ -45,22 +37,23 @@ def cmd_init(args) -> int:
 def cmd_smoke_frontier(args, config) -> int:
     try:
         client = _frontier(config)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, FrontierError) as exc:
         print(f"FRONTIER FAIL: {exc}")
         return 1
     try:
-        result = client.call("Reply with exactly: frontier-ok")
+        result = client.complete("Reply with exactly: frontier-ok")
     except FrontierError as exc:
         print(f"FRONTIER FAIL: {exc}")
         return 1
     ok = result["ok"] and "frontier-ok" in result["final_text"]
     if args.json:
-        print(json.dumps({"ok": ok, "subtype": result["subtype"],
-                          "usage": result["usage"], "text": result["final_text"]}))
+        print(json.dumps({"ok": ok, "backend": result.get("backend"),
+                          "subtype": result["subtype"], "usage": result["usage"],
+                          "text": result["final_text"]}))
         return 0 if ok else 1
-    print(f"FRONTIER {'OK' if ok else 'FAIL'} subtype={result['subtype']} "
-          f"exit={result['exit_code']} usage={result['usage']} "
-          f"text={result['final_text']!r}")
+    print(f"FRONTIER {'OK' if ok else 'FAIL'} backend={result.get('backend')} "
+          f"subtype={result['subtype']} exit={result['exit_code']} "
+          f"usage={result['usage']} text={result['final_text']!r}")
     return 0 if ok else 1
 
 

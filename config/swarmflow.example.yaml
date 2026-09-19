@@ -4,11 +4,37 @@
 # untracked by git.
 
 frontier:
-  # Command Code CLI used for planning / verification / acceptance.
-  # Leave empty to auto-detect `commandcode` on PATH.
-  cmd_path: ""
-  model: "deepseek/deepseek-v4-flash"
-  effort: null            # null | low | high | max
+  # Backend used for planning / verification / acceptance.
+  #   auto        - picks the first configured option below (command > base_url > CLI)
+  #   openai      - any OpenAI-compatible /chat/completions endpoint (stdlib, no SDK)
+  #   commandcode - Command Code CLI in headless mode
+  #   cli         - any terminal agent CLI via an argv template
+  #   pi          - Pi itself, with a provider model configured in Pi
+  backend: "auto"
+
+  # --- openai backend -------------------------------------------------------
+  base_url: ""              # e.g. "https://api.deepseek.com/v1", "http://localhost:11434/v1"
+  api_key: ""               # e.g. "${DEEPSEEK_API_KEY}" (env expansion supported)
+  system_prompt: ""         # optional system message
+  extra_body: {}            # merged into the request body, e.g. {"chat_template_kwargs": {"enable_thinking": false}}
+
+  # --- commandcode backend --------------------------------------------------
+  cmd_path: ""              # leave empty to auto-detect `commandcode` on PATH
+
+  # --- cli backend (adapter for any CLI agent) ------------------------------
+  command: []               # e.g. ["myagent", "--prompt-file", "{prompt_file}", "--json"]
+                            # tokens support {prompt_file} (temp file) and {prompt} (inline)
+  output: "text"            # text | json
+  result_path: ""           # dotted path into JSON output, e.g. "result.finalText"
+
+  # --- pi backend -----------------------------------------------------------
+  pi_cli: ""                # leave empty to auto-detect `pi` on PATH
+  node: "node"
+  thinking: ""
+
+  # --- common ----------------------------------------------------------------
+  model: "deepseek/deepseek-v4-flash"   # model id for the chosen backend
+  effort: null            # null | low | high | max (where supported)
   timeout_s: 300
 
 worker:

@@ -21,6 +21,10 @@ plane, with a frontier model at decision gates. Read `docs/ARCHITECTURE.md` and
 - Configuration must stay portable: no personal paths in tracked files; resolve
   executables via `swarmflow.config.resolve_executable` and allow `${ENV_VAR}`
   expansion. Local overrides go in `config/swarmflow.yaml` (untracked).
+- Frontier backends live in `swarmflow/frontier.py`. To add one, implement
+  `complete(prompt, **kwargs)` returning the normalized dict and register it in
+  `build_backend()`. Keep tests network-free (inject a transport, or run a local
+  process such as `sys.executable`).
 - Prompt templates in `prompts/` are part of the behavior surface. If you change a
   template, update the matching parser/validator (e.g. plan schema) in the same change.
 
