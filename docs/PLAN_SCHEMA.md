@@ -8,8 +8,9 @@ writes per-task specs, and enqueues tasks in the ledger.
 
 | field | required | meaning |
 |---|---|---|
-| `project_name` | no | short slug used in scaffolded SPEC.md |
+| `project_name` | no | short slug used in scaffolded SPEC.md and the run branch name |
 | `project` | yes* | absolute or repo-relative path to the target project root |
+| `mode` | no | `greenfield` (default) or `brownfield`; brownfield requires git, writes artifacts under `.swarmflow/`, and enables the regression gate |
 | `tasks` | yes | non-empty list of task objects (see below) |
 
 \* `--project` on the CLI overrides the plan value; one of the two must be present.
@@ -24,6 +25,7 @@ writes per-task specs, and enqueues tasks in the ledger.
 | `spec` | yes | enumerated requirements + edge cases; written to `specs/<id>.md` and embedded in the worker brief |
 | `acceptance` | no | machine-checkable checks (listed in the brief and used by verifiers) |
 | `test_command` | recommended | one exact runnable command the worker runs to verify; injected verbatim into the brief so workers never discover test setups |
+| `files_to_read` | no | existing files the worker should study first (defaults to `owner_files`) |
 | `thinking` | no | `medium` or `high` (default `high`); use `medium` for parser/formatting-heavy tasks to avoid reasoning spirals |
 | `wave` | no | integer wave (default 1); later waves may depend on earlier files existing |
 
@@ -42,3 +44,14 @@ writes per-task specs, and enqueues tasks in the ledger.
 ## Example
 See `examples/smoke-plan.yaml` for a minimal two-task plan and `docs/CASE_STUDY.md`
 for a five-task production example (NestJS + hexagonal architecture).
+
+## Brownfield notes
+- `owner_files` lists files to CREATE or MODIFY; ownership stays disjoint across all
+  tasks of the run. Shared surfaces (manifests, tool configs, package entry points,
+  registries/DI wiring) belong to a dedicated integration task, and per-wave freezes
+  make them mutable only in that task's wave.
+- All swarmflow artifacts live under `.swarmflow/` (SPEC.md, specs/, run.json,
+  recon.json, frozen.json, evidence/), which is appended to the repo's `.gitignore`.
+- The worker brief injects the canonical working rules inline (the repo's own
+  AGENTS.md is never overwritten) and carries the regression command as
+  MUST KEEP WORKING.

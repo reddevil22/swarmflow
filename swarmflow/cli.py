@@ -92,6 +92,15 @@ def cmd_recon(args, config) -> int:
     return 0
 
 
+def cmd_evidence(args, config) -> int:
+    from .evidence import write_bundle
+    ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
+    path = write_bundle(str(Path(args.project).resolve()), ledger)
+    ledger.close()
+    print(f"evidence bundle written: {path} ({path.stat().st_size} bytes)")
+    return 0
+
+
 def cmd_trace(args, config) -> int:
     scan = scan_trace(args.file, config["worker"]["max_output_tokens"])
     print(json.dumps(scan, indent=2)[:4000])
@@ -409,6 +418,10 @@ def main(argv: list[str] | None = None) -> int:
     audit_p.add_argument("--project", required=True)
     audit_p.add_argument("--json", action="store_true")
     audit_p.set_defaults(func=cmd_audit)
+
+    evidence_p = sub.add_parser("evidence", help="assemble the evidence bundle for a project")
+    evidence_p.add_argument("--project", required=True)
+    evidence_p.set_defaults(func=cmd_evidence)
 
     args = parser.parse_args(argv)
     if args.command == "init":

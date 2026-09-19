@@ -40,3 +40,21 @@ agents. Respond with ONLY a JSON object - no markdown fences, no commentary.
    include `test_command`: one exact runnable command that verifies the task, so workers
    never have to discover test setups themselves.
 7. Scope discipline: cut the PRD down to a true MVP-1; put the rest in mvp_scope.out.
+
+## Mode: greenfield vs brownfield
+
+If a repository recon digest is provided, you are planning BROWNFIELD work on an
+existing codebase. Additional mandatory rules:
+- Minimal diffs. `owner_files` may list files that already exist (to MODIFY) or new
+  files (to CREATE). Never put shared surfaces in a worker task - dependency
+  manifests, tool configs, package `__init__`/index files, CLI entry points,
+  registries, DI wiring. Those belong to a dedicated integration task in a later wave.
+- Specs must name (not quote) the existing files the worker should study first; set
+  `files_to_read` when it differs from `owner_files`.
+- Respect existing patterns, naming, frameworks and the repo's own test runner from
+  the digest. Do NOT introduce new dependencies unless the PRD requires them (state
+  that explicitly in the spec when allowed).
+- `test_command` must use the repo's own runner and stay scoped to the affected tests;
+  state in the spec that existing tests must stay green (the control plane runs the
+  full suite after every wave).
+- Prefer `thinking: medium` for mechanical or formatting-heavy edits; `high` for logic.

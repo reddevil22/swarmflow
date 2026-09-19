@@ -6,6 +6,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+- **Brownfield support** (existing repositories, regression-safe):
+  - `swarmflow recon` surveys a repo deterministically (stacks, evidence-backed test/
+    build/lint commands, git state with tracked-only dirtiness, test inventory).
+  - `mode: brownfield` plans: minimal diffs, integration task for shared surfaces,
+    repo's own test runner; `files_to_read` per task.
+  - Git preflight: clean-tree refusal (`--allow-dirty`), run branch create/reuse,
+    `.swarmflow/` artifact namespace with `.gitignore` management, first-write-wins
+    `run.json` (mode/branch/base_sha).
+  - Regression gate: project suite baselined once per run and re-run after every wave
+    (timeout-bounded, per-stack failure parsing, baseline-red aware); new failures
+    fail the wave before the audit runs.
+  - Git-based scope audit for brownfield (tracked hashes unless owned,
+    untracked-unowned detection) with per-wave ownership scoping.
+  - Truthful deliveries: `no_changes` when a task's owned files are untouched.
+  - Stack-aware worker briefs (node/python/go/rust/generic) with inline working rules
+    for brownfield; broader forbidden-action scan (pip/poetry/uv/go get/cargo add).
+  - `swarmflow evidence` bundle (recon, ledger, reports from traces, audit,
+    regression, bounded diff of tests + manifests) for verifier/acceptance passes.
+
 ### Changed
 - Frontier access is backend-agnostic: `frontier.backend` selects `openai` (any
   OpenAI-compatible `/chat/completions` API via a stdlib-only client), `commandcode`,

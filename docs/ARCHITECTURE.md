@@ -42,8 +42,15 @@ Measured behavior this design relies on (stress test, 2026-09-19):
 | timeout / stall | process timeout (config `worker_timeout_s`) | kill, mark failed, requeue once |
 | tests pass but requirements unmet | verifier stage (roadmap) + acceptance scripts | targeted fix task referencing the finding |
 | silent cross-cutting regression | MUST-KEEP-WORKING contract suite run per wave | reject delivery, fix task |
+| regression introduced at a wave boundary | regression gate re-runs the project suite after every wave (baseline in run.json) | wave marked failed, ledger event, evidence kept, fix task |
+| modify task delivered without touching its owned files | dispatch-time sha256 snapshots of owned files | outcome `no_changes`, wave fails |
 | scope creep | ownership map diff audit (roadmap) | reject delivery |
 | engine saturation | `/metrics`: waiting > 0 or KV > threshold | hold dispatches (admission control) |
+
+Audit modes: greenfield uses a walk-based snapshot with persisted ignore lists;
+brownfield uses git itself (tracked hashes must match unless owned; untracked-unowned
+files are violations; gitignored files are invisible). Brownfield freezes happen per
+wave, scoping an integration task's ownership of shared files to its own wave.
 
 Exit codes are never trusted as success signals (observed rc=0 with an empty deliverable).
 

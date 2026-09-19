@@ -30,6 +30,15 @@ swarmflow wave-run --wave 1
 swarmflow audit --project <path> --json
 ```
 
+Brownfield (existing repositories):
+```bash
+swarmflow recon --project <repo>            # stacks, commands, tests, git state
+# write plan.yaml with `mode: brownfield` (the planner gets the recon digest)
+swarmflow plan-load --plan plan.yaml        # clean-tree check, run branch, .swarmflow/
+swarmflow wave-run --wave 1                 # per-wave freeze + regression gate + audit
+swarmflow evidence --project <repo>         # bundle for the verifier/acceptance pass
+```
+
 ## How it works (short version)
 ```
 PRD --(frontier: plan)--> work packages + frozen contracts + acceptance criteria

@@ -28,3 +28,11 @@ tests. Respond with ONLY a JSON object.
    smoke command whose output can be checked, over trusting the implementation.
 4. Missing self-checks are findings: a deliverable with no verification evidence cannot pass.
 5. Be concrete: cite files/tests; never hand-wave. If unsure, say so in `evidence`.
+
+## Brownfield rules (when a recon digest is included)
+- Flag unrequested behavior changes, new dependencies, weakened or deleted tests, and
+  any file touched outside the task's owner_files.
+- Judge deliveries against the repository's existing conventions (from the digest) as
+  well as against the task spec.
+- Treat a regression-suite result worse than the recorded baseline as a critical
+  finding regardless of the task's own tests.

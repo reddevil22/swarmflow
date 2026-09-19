@@ -20,4 +20,11 @@ Quickstart:
   swarmflow wave-run --wave 1
   swarmflow audit --project <path> --json
 
+Brownfield (existing repos):
+  swarmflow recon --project <repo>        # deterministic survey + digest
+  plan.yaml with mode: brownfield         # planner prompt gets the recon digest
+  swarmflow plan-load --plan plan.yaml    # git preflight, run branch, .swarmflow/
+  swarmflow wave-run --wave 1             # per-wave freeze, regression gate, audit
+  swarmflow evidence --project <repo>     # bundle for verifier/acceptance
+
 Tests: python -m pytest tests -q (no network required).

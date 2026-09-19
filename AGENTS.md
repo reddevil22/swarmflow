@@ -30,7 +30,7 @@ plane, with a frontier model at decision gates. Read `docs/ARCHITECTURE.md` and
 
 ## Layout
 - `swarmflow/` - control plane package (config, ledger, frontier, workers, audit,
-  plan, cli)
+  recon, regression, evidence, plan, cli)
 - `prompts/` - planner / task brief / verifier / acceptance templates
 - `docs/` - architecture, workflow, plan schema, case study
 - `tests/` - unit tests (fast, no network)
@@ -44,7 +44,9 @@ pip install -e ".[dev]"
 python -m pytest tests -q
 swarmflow status --json
 swarmflow audit --project <path> --json
-swarmflow smoke-frontier        # needs Command Code CLI + auth
+swarmflow recon --project <path>            # brownfield survey
+swarmflow evidence --project <path>          # verifier bundle
+swarmflow smoke-frontier        # needs the configured frontier backend
 swarmflow smoke-worker          # needs Pi + a local model endpoint
 ```
 
