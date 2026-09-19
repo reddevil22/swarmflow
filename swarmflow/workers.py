@@ -92,6 +92,49 @@ def _last_float(line: str) -> float:
         return 0.0
 
 
+FORBIDDEN_ACTIONS = [
+    "npm install", "npm ci", "npm i ", "npm add", "npm update",
+    "pnpm", "yarn add", "yarn install", "bun install",
+    "rm -rf node_modules", "rmdir /s", "npm audit fix",
+]
+
+
+def scan_forbidden(trace_path: str) -> list[str]:
+    """Return worker bash commands that violate the dependency envelope."""
+    hits = []
+    trace = Path(trace_path)
+    if not trace.exists():
+        return hits
+    for line in trace.open(encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") != "message_end":
+            continue
+        message = event.get("message") or {}
+        if message.get("role") != "assistant":
+            continue
+        for item in message.get("content") or []:
+            if isinstance(item, dict) and item.get("name") == "bash":
+                args = item.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except ValueError:
+                        args = {}
+                cmd = str((args or {}).get("command", ""))
+                lowered = cmd.lower()
+                for pattern in FORBIDDEN_ACTIONS:
+                    if pattern in lowered:
+                        hits.append(cmd[:200])
+                        break
+    return hits
+
+
 class WorkerRunner:
     def __init__(self, config: dict, ledger, project_root: str, repo_root: Path):
         self.config = config
@@ -121,24 +164,40 @@ class WorkerRunner:
 
     def _finalize(self, handle: dict, timeout_s: float) -> dict:
         proc, out, task = handle["proc"], handle["out"], handle["task"]
-        try:
-            proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-        finally:
-            out.close()
-        scan = scan_trace(handle["trace"], self.config["worker"]["max_output_tokens"])
+        cap = self.config["worker"]["max_output_tokens"]
+        turn_cap = int(self.config["worker"].get("max_turns", 45))
+        killed_for = None
+        deadline = time.time() + timeout_s
+        while proc.poll() is None:
+            if time.time() > deadline:
+                killed_for = "timeout"
+                proc.kill()
+                break
+            time.sleep(15)
+            if scan_trace(handle["trace"], cap)["turns"] > turn_cap:
+                killed_for = "turn_cap"
+                proc.kill()
+                break
+        proc.wait()
+        out.close()
+        scan = scan_trace(handle["trace"], cap)
+        forbidden = scan_forbidden(handle["trace"])
         missing = [f for f in task.get("owner_files", [])
                    if not (self.project_root / f).exists()]
-        outcome = classify(scan, missing)
+        if killed_for == "turn_cap":
+            outcome = "turn_cap"
+        elif forbidden:
+            outcome = "scope_violation"
+        else:
+            outcome = classify(scan, missing)
         status = "delivered" if outcome == "delivered" else "failed"
         self.ledger.set_status(
             task["id"], status,
             worker_trace=handle["trace"],
             artifacts=[f for f in task.get("owner_files", []) if (self.project_root / f).exists()],
             verdict=json.dumps({"outcome": outcome, "missing": missing,
-                                "turns": scan["turns"], "out_tokens": scan["out_tokens"]}),
+                                "turns": scan["turns"], "out_tokens": scan["out_tokens"],
+                                "killed_for": killed_for, "forbidden": forbidden[:3]}),
         )
         return {"task_id": task["id"], "outcome": outcome, "missing": missing, "scan": scan}
 
@@ -192,6 +251,11 @@ class WorkerRunner:
         concurrency = concurrency or self.config["swarm"]["concurrency"]
         tasks = self.ledger.list_tasks(status="queued", wave=wave)
         if not tasks:
+            return []
+        if (self.project_root / "package.json").exists() and \
+                not (self.project_root / "node_modules").exists():
+            self.ledger.record_event(tasks[0]["id"], "wave-abort",
+                                     "node_modules missing; refusing to dispatch")
             return []
         self._wait_ready()
         results = []

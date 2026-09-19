@@ -2,7 +2,7 @@
 
 import json
 
-from swarmflow.workers import classify, scan_trace
+from swarmflow.workers import classify, scan_forbidden, scan_trace
 
 CAP = 32768
 
@@ -74,3 +74,25 @@ def test_missing_trace_file_is_handled(tmp_path):
     scan = scan_trace(str(tmp_path / "nope.jsonl"), CAP)
     assert scan["exists"] is False
     assert classify(scan, []) == "no_agent_end"
+
+
+def _trace_with_bash(tmp_path, command):
+    trace = tmp_path / "t.jsonl"
+    trace.write_text(json.dumps({
+        "type": "message_end",
+        "message": {"role": "assistant",
+                    "content": [{"type": "toolCall", "name": "bash",
+                                 "arguments": {"command": command}}]},
+    }) + "\n", encoding="utf-8")
+    return trace
+
+
+def test_forbidden_actions_detected(tmp_path):
+    for command in ["npm install", "pnpm install", "rm -rf node_modules", "npm ci"]:
+        trace = _trace_with_bash(tmp_path, command)
+        assert scan_forbidden(str(trace)), f"should flag: {command}"
+
+
+def test_clean_commands_are_not_flagged(tmp_path):
+    trace = _trace_with_bash(tmp_path, "npx jest src/domain/task.spec.ts")
+    assert scan_forbidden(str(trace)) == []

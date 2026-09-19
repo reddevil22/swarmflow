@@ -12,6 +12,7 @@ worker:
   thinking: "high"          # default; tasks may override
   retry_thinking: "medium"  # proven recovery for reasoning-spiral failures
   timeout_s: 2400
+  max_turns: 45             # supervisor kills workers that exceed this
   max_output_tokens: 32768  # model output cap, used for spiral detection
 
 swarm:

@@ -18,4 +18,20 @@ ACCEPTANCE CHECKS (must all hold when done):
 MUST KEEP WORKING (do not break these; run them if provided):
 {must_keep_working}
 
+## ENVIRONMENT RULES (violations cause rejection)
+
+- This project uses ONLY npm and npx. Never use pnpm, yarn, or bun.
+- Run your tests with: `npx jest <your-test-file>` from the project root.
+  Jest cold start takes ~20s: run it once per fix cycle, never in a loop,
+  and never run other workers' test files.
+- NEVER read, grep, list, or explore node_modules. It is not your business.
+- NEVER modify package.json, package-lock.json, tsconfig.json, jest.config.js,
+  jest-e2e.json, or any file you do not own. Do not run npm/pnpm/yarn install;
+  dependencies are already installed.
+- Do not create scratch/temp files. If you created one by accident, delete it.
+- If the SAME failure persists after 3 fix attempts, stop immediately and report
+  a `BLOCKED` section with: the exact command, the exact output, and what you
+  tried. Do not keep probing.
+- Stay under ~40 tool calls. Reading your own code beats shell experimentation.
+
 When done, run your tests from the project root and report using the required sections.
