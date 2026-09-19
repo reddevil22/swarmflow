@@ -1,0 +1,23 @@
+# swarmflow
+
+> Deterministic control plane for orchestrating swarms of local coding agents:
+> PRD in, verified MVP out.
+
+Docs:
+- docs/ARCHITECTURE.md: roles, task state machine, failure taxonomy, capacity numbers
+- docs/WORKFLOW.md: PRD -> MVP stages, evidence bundle, human PR gate
+- docs/PLAN_SCHEMA.md: plan.yaml format (tasks, ownership, test_command, acceptance)
+- docs/CASE_STUDY.md: first validation run outcomes and incidents
+- AGENTS.md: repository guide for coding agents
+- AGENTS.worker.md: worker rules template injected into scaffolded projects
+
+Quickstart:
+  pip install -e ".[dev]"
+  swarmflow init
+  swarmflow smoke-frontier && swarmflow smoke-worker
+  swarmflow plan-load --plan examples/smoke-plan.yaml --project <path>
+  swarmflow freeze --project <path>
+  swarmflow wave-run --wave 1
+  swarmflow audit --project <path> --json
+
+Tests: python -m pytest tests -q (no network required).

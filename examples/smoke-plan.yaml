@@ -1,0 +1,33 @@
+# Minimal two-task smoke plan. Run from the repository root:
+#   swarmflow plan-load --plan examples/smoke-plan.yaml
+#   swarmflow freeze --project example-target
+#   swarmflow wave-run --wave 1 --concurrency 2
+project_name: smoke
+project: example-target
+tasks:
+  - id: greeter
+    module: greeter.py
+    owner_files: [greeter.py, test_greeter.py]
+    thinking: medium
+    wave: 1
+    test_command: python -m pytest test_greeter.py -q
+    spec: |
+      1) greet(name: str) -> str returns f"Hello, {name}!".
+      2) greet("") and greet(None) raise ValueError.
+      3) farewell(name: str) -> str returns f"Goodbye, {name}!".
+      Edge cases: empty string and None for both functions raise ValueError.
+    acceptance:
+      - python -m pytest test_greeter.py -q passes from the project root
+  - id: fizzbuzz
+    module: fizzbuzz.py
+    owner_files: [fizzbuzz.py, test_fizzbuzz.py]
+    thinking: medium
+    wave: 1
+    test_command: python -m pytest test_fizzbuzz.py -q
+    spec: |
+      1) fizzbuzz(n: int) -> list[str] over 1..n: multiples of 15 -> "FizzBuzz",
+         multiples of 3 -> "Fizz", multiples of 5 -> "Buzz", else the number as string.
+      2) n == 0 returns []; n < 0 raises ValueError.
+      Edge cases: n=0, n=1, n=15 covered by tests.
+    acceptance:
+      - python -m pytest test_fizzbuzz.py -q passes from the project root
