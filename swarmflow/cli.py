@@ -8,7 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .audit import audit, freeze
+from .audit import audit, freeze, seal
 from .config import DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, REPO_ROOT, load_config
 from .frontier import FrontierError, build_backend
 from .ledger import Ledger
@@ -284,12 +284,25 @@ def cmd_wave_run(args, config) -> int:
         project_root = tasks[0]["project"]
         run_state = runstate.load_run(project_root)
         brownfield = run_state.get("mode") == "brownfield"
+        freeze_info = None
         if brownfield:
+            if run_state.get("frozen_at") and runstate.load_frozen(project_root) is None:
+                print("REFUSING: this run froze a baseline earlier but the control-plane "
+                      "store no longer has it; re-baseline explicitly with "
+                      "`swarmflow freeze --project <path> --mode brownfield`")
+                return 2
             owners = {task["id"]: task["owner_files"] for task in tasks}
-            info = freeze(project_root, owners, ignores=config["audit"]["ignore_extra"],
-                          mode="brownfield")
-            print(f"per-wave freeze: {info['frozen_files']} tracked file(s), "
-                  f"{info['owned']} owned path(s)")
+            freeze_info = freeze(project_root, owners,
+                                 ignores=config["audit"]["ignore_extra"],
+                                 mode="brownfield", carry_over=True)
+            run_state["frozen_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            runstate.save_run(project_root, run_state)
+            ledger.record_event(tasks[0]["id"], "freeze", json.dumps({
+                "entries": freeze_info["entries"], "carried": freeze_info["carried"],
+                "refreshed": freeze_info["refreshed"]}))
+            print(f"per-wave freeze: {freeze_info['entries']} baseline entries "
+                  f"({freeze_info['carried']} carried, {freeze_info['refreshed']} "
+                  f"refreshed), {freeze_info['owned']} owned path(s)")
         regression_enabled = bool(config["regression"].get("enabled", True)) \
             and not args.skip_regression
         regression_timeout = float(config["regression"]["timeout_s"])
@@ -388,6 +401,16 @@ def cmd_wave_run(args, config) -> int:
                                                quiet=args.json, ignores=audit_ignores,
                                                brownfield=brownfield)
         report["audit"] = {"state": audit_state, "result": audit_result}
+        if freeze_info is not None:
+            report["freeze"] = {"entries": freeze_info["entries"],
+                                "carried": freeze_info["carried"],
+                                "refreshed": freeze_info["refreshed"]}
+        if brownfield:
+            try:
+                report["seal"] = seal(project_root,
+                                      {task["id"]: task["owner_files"] for task in tasks})
+            except Exception as exc:              # never break a wave on sealing
+                print(f"seal failed, baseline left unsealed: {exc}")
         if args.json:
             print(json.dumps(report))
         else:
@@ -571,14 +594,22 @@ def cmd_freeze(args, config) -> int:
     if not tasks:
         print(f"no tasks registered for {project_root}")
         return 2
+    run_state = runstate.load_run(project_root)
+    mode = args.mode or run_state.get("mode") or "greenfield"
     owners = {task["id"]: task["owner_files"] for task in tasks}
     info = freeze(project_root, owners, ignores=config["audit"]["ignore_extra"],
-                  mode=args.mode)
+                  mode=mode)
+    if mode == "brownfield":
+        run_state["frozen_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        run_state.setdefault("mode", mode)
+        runstate.save_run(project_root, run_state)
     if args.json:
         print(json.dumps(info))
     else:
-        print(f"frozen {info['frozen_files']} files ({info['owned']} owned paths) "
-              f"-> {info['baseline']}")
+        print(f"frozen {info['frozen_files']} baseline entries "
+              f"({info['owned']} owned paths) -> {info['baseline']}")
+        print("re-balanced every tracked file (carried=0): this clears any pending "
+              "modified/deleted_frozen findings for this project")
     return 0
 
 
@@ -659,8 +690,9 @@ def main(argv: list[str] | None = None) -> int:
 
     freeze_p = sub.add_parser("freeze", help="snapshot the frozen baseline for a project")
     freeze_p.add_argument("--project", required=True)
-    freeze_p.add_argument("--mode", default="greenfield",
-                          choices=["greenfield", "brownfield"])
+    freeze_p.add_argument("--mode", default=None,
+                          choices=["greenfield", "brownfield"],
+                          help="defaults to the run's recorded mode")
     freeze_p.add_argument("--json", action="store_true")
     freeze_p.set_defaults(func=cmd_freeze)
 

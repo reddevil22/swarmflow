@@ -64,6 +64,8 @@ def test_freeze_and_audit_json(tmp_path, capsys):
                      "--json"]) == 0
     frozen = json.loads(capsys.readouterr().out)
     assert frozen["frozen_files"] == 1
+    assert frozen["entries"] == 1
+    assert frozen["carried"] == 0            # a manual freeze re-balances everything
     assert cli.main(["--config", str(config), "audit", "--project", str(project),
                      "--json"]) == 0
     audited = json.loads(capsys.readouterr().out)

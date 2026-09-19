@@ -73,6 +73,10 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    mode/branch/base_sha. The project-side `.swarmflow/run.json` is a marked mirror that
    nothing reads; a pre-upgrade run is adopted once (structural fields only).
 4. **Waves**: before each wave, freeze only that wave's owner map (per-wave ownership).
+   The freeze **carries** the previous baseline's hashes for files the wave does not own
+   (an edit made between waves stays visible; only an owning wave re-reads a file, and
+   its post-wave content is sealed right after the audit). A deliberate re-baseline is
+   `swarmflow freeze --project P` (mode inferred from the run; it prints the counts).
    After each wave: the process sweep diffs process snapshots taken before/after the
    wave, attributes new processes to the project (command line or working directory),
    attaches listening ports and reports them (`evidence/wave<N>.sweep.json`;

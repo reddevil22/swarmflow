@@ -62,7 +62,7 @@ def _iter_files(root: Path, ignores: list[str]) -> dict:
 
 
 def freeze(project_root: str, owners: dict, ignores: list[str] | None = None,
-           mode: str = "greenfield") -> dict:
+           mode: str = "greenfield", carry_over: bool = False) -> dict:
     """Snapshot the current tree as the frozen baseline.
 
     greenfield: walk-based snapshot of every non-ignored file; the effective ignore
@@ -70,27 +70,97 @@ def freeze(project_root: str, owners: dict, ignores: list[str] | None = None,
     brownfield: git-tracked files only - the repository's own .gitignore is the
     ignore list, which ends the ignore-list arms race.
 
+    ``carry_over`` (brownfield only, used by the per-wave freeze): files that are
+    neither new nor owned by the current wave keep the hash from the previous baseline -
+    even when the file is missing - so edits made between waves stay visible instead of
+    being silently re-blessed. Owned files are re-read here (pre-wave content) and again
+    by ``seal`` after the wave. A deliberate re-baseline uses the default
+    (``carry_over=False``): ``swarmflow freeze``.
+
     `owners` maps task id -> list of owned (and therefore mutable) file paths,
     relative to the project root.
     """
     root = Path(project_root).resolve()
     merged = DEFAULT_IGNORES + list(ignores or [])
     owner_map = {rel: task_id for task_id, owned in owners.items() for rel in owned}
+    carried = refreshed = 0
     if mode == "brownfield":
-        files = {}
-        for rel in _git_tracked(root):
-            try:
-                files[rel] = _hash_file(root / rel)
-            except OSError:
-                continue
+        previous = runstate.load_frozen(str(root)) if carry_over else None
+        if not isinstance(previous, dict) or previous.get("mode") != "brownfield":
+            previous = None
+        if previous is None:
+            files = {}
+            for rel in _git_tracked(root):
+                try:
+                    files[rel] = _hash_file(root / rel)
+                except OSError:
+                    continue
+                refreshed += 1
+        else:
+            previous_files = previous.get("files") or {}
+            files = {}
+            for rel in sorted(set(_git_tracked(root)) | set(previous_files)):
+                if rel in owner_map:
+                    path = root / rel
+                    if path.exists():
+                        try:
+                            files[rel] = _hash_file(path)
+                        except OSError:
+                            continue
+                        refreshed += 1
+                    continue          # owned but missing: the seal will drop it
+                if rel in previous_files:
+                    files[rel] = previous_files[rel]
+                    carried += 1
+                elif (root / rel).exists():
+                    try:
+                        files[rel] = _hash_file(root / rel)
+                    except OSError:
+                        continue
+                    refreshed += 1
         baseline = {"mode": "brownfield", "files": files, "owners": owner_map}
     else:
         files = _iter_files(root, merged)
         baseline = {"mode": "greenfield", "files": files, "ignores": merged,
                     "owners": owner_map}
+        refreshed = len(files)
     runstate.save_frozen(str(root), baseline)
-    return {"frozen_files": len(baseline["files"]), "owned": len(owner_map),
+    return {"frozen_files": len(baseline["files"]),
+            "entries": len(baseline["files"]),
+            "owned": len(owner_map), "carried": carried, "refreshed": refreshed,
             "baseline": str(runstate.frozen_path(str(root))), "mode": mode}
+
+
+def seal(project_root: str, owners: dict) -> dict:
+    """Record post-wave hashes for the files this wave owned.
+
+    An owned file's content right after its wave is what the wave was allowed to change
+    it to; missing owned files are dropped (an owner removing its own file is
+    legitimate). Called by ``wave-run`` immediately after the wave audit.
+    """
+    root = Path(project_root).resolve()
+    baseline = runstate.load_frozen(str(root))
+    if not isinstance(baseline, dict) or baseline.get("mode") != "brownfield":
+        return {"sealed": 0, "dropped": 0}
+    paths = {rel for owned in owners.values() for rel in owned}
+    files = baseline.get("files") or {}
+    sealed = dropped = 0
+    for rel in sorted(paths):
+        if rel not in files:
+            continue              # new/untracked files are outside the baseline today
+        path = root / rel
+        if path.exists():
+            try:
+                files[rel] = _hash_file(path)
+            except OSError:
+                continue
+            sealed += 1
+        else:
+            del files[rel]
+            dropped += 1
+    baseline["files"] = files
+    runstate.save_frozen(str(root), baseline)
+    return {"sealed": sealed, "dropped": dropped}
 
 
 def audit(project_root: str, ignores: list[str] | None = None) -> dict:

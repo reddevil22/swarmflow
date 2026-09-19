@@ -7,6 +7,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- **Sticky frozen baseline** (`audit.freeze(carry_over=True)` + `audit.seal`): the
+  per-wave freeze no longer re-hashes files the wave does not own - it carries the
+  previous baseline's hashes (including entries for deleted files), so a `modified_frozen`
+  or `deleted_frozen` finding stays red until an explicit re-baseline. The wave that owns
+  a file seals its post-wave content right after the audit, which is the only moment an
+  owned change becomes the new baseline. `swarmflow freeze` (mode inferred from the run,
+  counts printed, rebalance note) is the explicit re-baseline; a missing baseline after a
+  run froze one refuses the wave instead of silently re-baking. Wave reports and the
+  ledger carry the carried/refreshed counts.
 - **Control-plane state store** (`swarmflow/runstate.py`): gate state (run record,
   frozen baseline, the resolved regression command) lives outside the worker-writable
   project at `<state_dir>/runs/<hash-of-project>/` (default `<repo>/state/`). The

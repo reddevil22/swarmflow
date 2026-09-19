@@ -44,7 +44,7 @@ Measured behavior this design relies on (stress test, 2026-09-19):
 | silent cross-cutting regression | MUST-KEEP-WORKING contract suite run per wave | reject delivery, fix task |
 | regression introduced at a wave boundary | regression gate re-runs the project suite after every wave and diffs failing-test fingerprints (baseline in the control-plane state store) | wave marked failed, ledger event, compare file, fix task |
 | worker rewrites gate state (`recon.json`, `run.json`, project `frozen.json`) | gate inputs live in `REPO_ROOT/state/runs/<hash-of-project>/`; the regression command is frozen at plan-load and never re-derived from the project | audit outcome unchanged; the project-side `run.json` is only a marked mirror |
-| a killed worker refuses to die | bounded `kill_grace_s` wait, then `proc.kill()`, then a recorded `kill_failed` outcome | task failed with an honest verdict instead of a hung wave |
+| frozen file modified between waves (laundering) | the per-wave freeze carries unowned hashes instead of re-hashing them; the wave that owns a file seals its post-wave content (`audit.seal`) | the finding stays red until an explicit `swarmflow freeze` re-baseline |
 | tests pass but do not discriminate (accommodating tests) | discrimination check: the wave's owned test files re-run at the run's base commit in a throwaway git worktree | verdicts in the ledger + evidence bundle; `discrimination.mode: enforce` fails the wave |
 | suite weakened or deleted while staying green | executed-test inventory (skips/ignores excluded) compared against the baseline | wave marked failed (`suite shrank 13 -> 5`) |
 | uncomparable suite results (unknown runner, legacy baseline) | both runs red with no fingerprints on either side | fail closed under `regression.strict` (default); warning otherwise |
@@ -56,7 +56,11 @@ Measured behavior this design relies on (stress test, 2026-09-19):
 Audit modes: greenfield uses a walk-based snapshot with persisted ignore lists;
 brownfield uses git itself (tracked hashes must match unless owned; untracked-unowned
 files are violations; gitignored files are invisible). Brownfield freezes happen per
-wave, scoping an integration task's ownership of shared files to its own wave.
+wave, scoping an integration task's ownership of shared files to its own wave - and the
+freeze **carries** the previous baseline's hashes for files the wave does not own, so an
+edit made between waves stays visible until an explicit `swarmflow freeze` re-baseline.
+The wave that owns a file seals its post-wave content (`audit.seal`), which is the only
+moment an owned change becomes the new baseline.
 
 Exit codes are never trusted as success signals (observed rc=0 with an empty deliverable).
 

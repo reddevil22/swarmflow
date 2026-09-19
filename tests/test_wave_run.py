@@ -579,6 +579,82 @@ def test_project_side_state_cannot_forge_the_audit(tmp_path, monkeypatch):
     assert cli.main(["--config", str(config), "wave-run", "--wave", "2"]) == 1
 
 
+def _brownfield_repo(tmp_path, files, name="repo"):
+    repo = tmp_path / name
+    repo.mkdir()
+
+    def run(*args):
+        subprocess.run(["git", *args], cwd=repo, capture_output=True, check=True)
+
+    run("init", "-q")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "T")
+    (repo / ".gitignore").write_text(".swarmflow/\nlogs/\n", encoding="utf-8")
+    for rel, text in files.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-qm", "baseline")
+    return repo
+
+
+def _brownfield_plan(tmp_path, repo, name="plan.yaml"):
+    plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
+            "tasks": [{"id": "T1", "module": "owned.py", "owner_files": ["owned.py"],
+                       "spec": "do", "wave": 1}]}
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(plan), encoding="utf-8")
+    return path
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_between_wave_edit_of_a_frozen_file_stays_visible(tmp_path, monkeypatch, capsys):
+    """The reported hole: wave N+1's per-wave freeze must not re-bless an edit that
+    happened between waves."""
+    repo = _brownfield_repo(tmp_path, {"frozen.py": "x = 1\n"})
+    config = _config(tmp_path)
+    plan_path = _brownfield_plan(tmp_path, repo)
+    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+
+    (repo / "frozen.py").write_text("x = 2\n", encoding="utf-8")   # between waves
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    ledger.add_task("T2", str(repo), wave=2, owner_files=["owned.py"])
+    ledger.close()
+    capsys.readouterr()
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "2"]) == 1
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    events = [event for event in ledger.events("T2", limit=30)
+              if event["kind"] == "scope-violation"]
+    ledger.close()
+    assert any("modified_frozen" in event["detail"] and "frozen.py" in event["detail"]
+               for event in events)
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_missing_frozen_baseline_refuses_the_wave(tmp_path, monkeypatch, capsys):
+    repo = _brownfield_repo(tmp_path, {"frozen.py": "x = 1\n"})
+    config = _config(tmp_path)
+    plan_path = _brownfield_plan(tmp_path, repo)
+    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+    runstate.frozen_path(str(repo)).unlink()
+
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    ledger.add_task("T2", str(repo), wave=2, owner_files=["owned.py"])
+    ledger.close()
+    capsys.readouterr()
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "2"]) == 2
+    assert "REFUSING" in capsys.readouterr().out
+
+
 @pytest.mark.skipif(not GIT, reason="git not available")
 def test_brownfield_wave_aborts_without_node_modules(tmp_path):
     repo = tmp_path / "repo"
