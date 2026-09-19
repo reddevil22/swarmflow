@@ -3,3 +3,11 @@ __pycache__/
 state/
 logs/
 *.pyc
+config/swarmflow.yaml
+*.egg-info/
+build/
+dist/
+.venv/
+.mypy_cache/
+.ruff_cache/
+example-target/

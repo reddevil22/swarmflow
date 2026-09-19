@@ -10,6 +10,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from .config import build_cli_command, resolve_executable
+
 
 def scan_trace(path: str, max_output_tokens: int = 32768) -> dict:
     """Analyze a Pi --mode json trace file. Returns a summary used for classification."""
@@ -148,9 +150,13 @@ class WorkerRunner:
 
     def _spawn(self, task: dict, thinking: str, attempt: int):
         worker = self.config["worker"]
+        if not worker.get("model"):
+            raise ValueError("worker.model is not configured; run `swarmflow init` "
+                             "and edit config/swarmflow.yaml")
+        cli = worker.get("pi_cli") or resolve_executable(["pi"])
+        prefix = build_cli_command(cli, worker.get("node", "node"))
         trace_path = self.logs_dir / f"{task['id']}_a{attempt}.jsonl"
-        cmd = [
-            worker["node"], worker["pi_cli"],
+        cmd = prefix + [
             "-p", "--mode", "json", "--no-session",
             "--model", worker["model"], "--thinking", thinking,
         ]

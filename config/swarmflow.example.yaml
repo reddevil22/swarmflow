@@ -1,0 +1,38 @@
+# swarmflow configuration example
+# Copy to config/swarmflow.yaml (or run `swarmflow init`) and edit for your machine.
+# Values support ${ENV_VAR} expansion; local edits to config/swarmflow.yaml are
+# untracked by git.
+
+frontier:
+  # Command Code CLI used for planning / verification / acceptance.
+  # Leave empty to auto-detect `commandcode` on PATH.
+  cmd_path: ""
+  model: "deepseek/deepseek-v4-flash"
+  effort: null            # null | low | high | max
+  timeout_s: 300
+
+worker:
+  # Pi executable for worker sessions. Leave empty to auto-detect `pi` on PATH,
+  # or point at an entry point such as
+  # .../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+  pi_cli: ""
+  node: "node"
+  # Model id exactly as configured in Pi (see ~/.pi/agent/models.json),
+  # e.g. "mybox/qwen3.6-35b-a3b"
+  model: ""
+  thinking: "high"
+  retry_thinking: "medium"
+  timeout_s: 2400         # per-session wall clock limit (seconds)
+  max_turns: 45           # supervisor kills workers above this turn count
+  max_output_tokens: 32768  # model output cap, used for spiral detection
+
+swarm:
+  concurrency: 8          # measured sweet spot for one local endpoint: 8-10
+  stagger_s: 2.0
+  metrics_url: "http://127.0.0.1:8000/metrics"  # vLLM /metrics for admission control
+  backpressure_waiting: 1 # hold dispatch when the server has queued requests
+  backpressure_kv: 0.55   # hold dispatch above this KV-cache usage
+
+paths:
+  logs_dir: "logs"        # traces, relative to the target project root
+  ledger: "state/ledger.db"

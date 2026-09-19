@@ -1,11 +1,14 @@
-"""Configuration loading for swarmflow."""
+"""Configuration loading, portability helpers and executable resolution."""
 
+import os
+import shutil
 from pathlib import Path
 
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "swarmflow.yaml"
+EXAMPLE_CONFIG_PATH = REPO_ROOT / "config" / "swarmflow.example.yaml"
 
 DEFAULTS = {
     "frontier": {
@@ -17,16 +20,17 @@ DEFAULTS = {
     "worker": {
         "node": "node",
         "pi_cli": "",
-        "model": "vllm-79/qwen36",
+        "model": "",
         "thinking": "high",
         "retry_thinking": "medium",
         "timeout_s": 2400,
+        "max_turns": 45,
         "max_output_tokens": 32768,
     },
     "swarm": {
         "concurrency": 8,
         "stagger_s": 2.0,
-        "metrics_url": "http://192.168.1.79:8000/metrics",
+        "metrics_url": "http://127.0.0.1:8000/metrics",
         "backpressure_waiting": 1,
         "backpressure_kv": 0.55,
     },
@@ -35,6 +39,17 @@ DEFAULTS = {
         "ledger": "state/ledger.db",
     },
 }
+
+
+def _expand(value):
+    """Recursively expand ${ENV_VAR} / $ENV_VAR references in string values."""
+    if isinstance(value, str):
+        return os.path.expandvars(value)
+    if isinstance(value, dict):
+        return {key: _expand(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand(item) for item in value]
+    return value
 
 
 def _merge(base: dict, override: dict) -> dict:
@@ -47,10 +62,53 @@ def _merge(base: dict, override: dict) -> dict:
     return merged
 
 
+def resolve_config_path(path: str | None = None) -> Path:
+    """Resolve the config file: explicit path, $SWARMFLOW_CONFIG, or the default."""
+    candidates = []
+    if path:
+        candidates.append(Path(path))
+    elif os.environ.get("SWARMFLOW_CONFIG"):
+        candidates.append(Path(os.environ["SWARMFLOW_CONFIG"]))
+    else:
+        candidates.append(DEFAULT_CONFIG_PATH)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        f"no swarmflow config found at {candidates[0]}; run `swarmflow init` or copy "
+        f"{EXAMPLE_CONFIG_PATH} to {DEFAULT_CONFIG_PATH}"
+    )
+
+
 def load_config(path: str | None = None) -> dict:
-    """Load configuration, deep-merged over defaults."""
-    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    data = {}
-    if config_path.exists():
-        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    return _merge(DEFAULTS, data)
+    """Load configuration, deep-merged over defaults, with env expansion."""
+    config_path = resolve_config_path(path)
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    return _expand(_merge(DEFAULTS, data))
+
+
+def resolve_executable(names: list[str]) -> str:
+    """Return the first executable found on PATH; raises with guidance otherwise."""
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    raise FileNotFoundError(
+        "none of " + ", ".join(names) + " found on PATH; install one of them or set "
+        "the path explicitly in config/swarmflow.yaml"
+    )
+
+
+def build_cli_command(executable: str, node: str = "node") -> list[str]:
+    """Return a cross-platform argv prefix for running an executable or script.
+
+    - ``*.js`` entry points run through node
+    - ``*.cmd`` / ``*.bat`` shims run through the command interpreter
+    - anything else runs directly
+    """
+    lowered = executable.lower()
+    if lowered.endswith((".js", ".mjs", ".cjs")):
+        return [node, executable]
+    if lowered.endswith((".cmd", ".bat")):
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", executable]
+    return [executable]
