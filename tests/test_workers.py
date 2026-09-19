@@ -88,7 +88,9 @@ def _trace_with_bash(tmp_path, command):
 
 
 def test_forbidden_actions_detected(tmp_path):
-    for command in ["npm install", "pnpm install", "rm -rf node_modules", "npm ci"]:
+    for command in ["npm install", "pnpm install", "rm -rf node_modules", "npm ci",
+                    "pip install requests", "poetry add rich", "cargo add serde",
+                    "go get example.com/x"]:
         trace = _trace_with_bash(tmp_path, command)
         assert scan_forbidden(str(trace)), f"should flag: {command}"
 

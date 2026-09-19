@@ -10,7 +10,9 @@ import time
 import urllib.request
 from pathlib import Path
 
+from .audit import _hash_file
 from .config import build_cli_command, resolve_executable
+from .recon import load_recon
 
 
 class WaveAborted(Exception):
@@ -98,10 +100,74 @@ def _last_float(line: str) -> float:
         return 0.0
 
 
+STACK_RULES = {
+    "node": [
+        "- This project uses ONLY npm and npx. Never use pnpm, yarn, or bun.",
+        "- Test-runner cold starts are slow: run the verification command once per fix "
+        "cycle, never in a loop.",
+        "- NEVER read, grep, list, or explore node_modules.",
+        "- NEVER modify package.json, package-lock.json, or tool configs (tsconfig, "
+        "jest configs, bundler configs).",
+    ],
+    "python": [
+        "- Run tests only through the verification command above (the project's own "
+        "runner).",
+        "- NEVER run pip/pip3/python -m pip install, poetry, or uv: environments are "
+        "managed by the operator.",
+        "- NEVER modify pyproject.toml, requirements*.txt, setup.py/cfg, or lock files.",
+    ],
+    "go": [
+        "- Run tests only through the verification command above.",
+        "- NEVER run go get or go mod tidy; do not touch go.mod or go.sum.",
+    ],
+    "rust": [
+        "- Run tests only through the verification command above.",
+        "- NEVER run cargo add or cargo update; do not touch Cargo.toml or Cargo.lock.",
+    ],
+    "_generic": [
+        "- Use only the verification command above to run tests.",
+        "- NEVER install or upgrade tools or dependencies.",
+    ],
+}
+
+STACK_RULES_COMMON = [
+    "- NEVER modify files you do not own, including tool and dependency configs.",
+    "- Do not create scratch/temporary files; delete anything you create by accident.",
+    "- If the SAME failure persists after 3 fix attempts, stop immediately and report a "
+    "BLOCKED section with the exact command, the exact output, and what you tried.",
+    "- Stay under ~40 tool calls. Reading your own code beats shell experimentation.",
+]
+
+
+def stack_rules_block(stacks: list, has_package_json: bool = False) -> str:
+    """Compose the environment-rules block for the detected stacks."""
+    chosen = [stack for stack in stacks if stack in STACK_RULES]
+    if not chosen:
+        chosen = ["node"] if has_package_json else ["_generic"]
+    lines = ["## ENVIRONMENT RULES (violations cause rejection)", ""]
+    for stack in chosen:
+        lines.extend(STACK_RULES[stack])
+    lines.extend(STACK_RULES_COMMON)
+    return "\n".join(lines)
+
+
+def delivery_changed(project_root: Path, before: dict) -> bool:
+    """True if any owned file was created, deleted, or modified since the snapshot."""
+    for rel, digest in (before or {}).items():
+        path = Path(project_root) / rel
+        now = _hash_file(path) if path.exists() else None
+        if now != digest:
+            return True
+    return False
+
+
 FORBIDDEN_ACTIONS = [
     "npm install", "npm ci", "npm i ", "npm add", "npm update",
     "pnpm", "yarn add", "yarn install", "bun install",
     "rm -rf node_modules", "rmdir /s", "npm audit fix",
+    "pip install", "pip3 install", "python -m pip install",
+    "poetry add", "poetry install", "uv add", "uv pip install",
+    "go get", "cargo add", "cargo update",
 ]
 
 
@@ -169,8 +235,15 @@ class WorkerRunner:
             cmd, cwd=str(self.project_root), stdin=subprocess.PIPE,
             stdout=out, stderr=subprocess.STDOUT,
         )
+        before = {}
+        for rel in task.get("owner_files", []):
+            path = self.project_root / rel
+            try:
+                before[rel] = _hash_file(path) if path.exists() else None
+            except OSError:
+                before[rel] = None
         return {"proc": proc, "out": out, "trace": str(trace_path), "task": task,
-                "thinking": thinking}
+                "thinking": thinking, "before": before}
 
     def _finalize(self, handle: dict, timeout_s: float) -> dict:
         proc, out, task = handle["proc"], handle["out"], handle["task"]
@@ -200,6 +273,9 @@ class WorkerRunner:
             outcome = "scope_violation"
         else:
             outcome = classify(scan, missing)
+        if outcome == "delivered" and not delivery_changed(self.project_root,
+                                                           handle.get("before")):
+            outcome = "no_changes"
         status = "delivered" if outcome == "delivered" else "failed"
         self.ledger.set_status(
             task["id"], status,
@@ -230,21 +306,57 @@ class WorkerRunner:
 
     def build_prompt(self, task: dict, attempt_context: str = "") -> str:
         template = (self.repo_root / "prompts" / "task_brief.md").read_text(encoding="utf-8")
+        run_state = {}
+        run_path = self.project_root / ".swarmflow" / "run.json"
+        if run_path.exists():
+            try:
+                run_state = json.loads(run_path.read_text(encoding="utf-8"))
+            except ValueError:
+                run_state = {}
+        recon = load_recon(str(self.project_root))
+        brownfield = run_state.get("mode") == "brownfield"
         spec_path = task.get("spec_path")
         spec = "(see SPEC.md)"
         if spec_path and Path(spec_path).exists():
             spec = Path(spec_path).read_text(encoding="utf-8")
         acceptance = "\n".join(f"- {a}" for a in task.get("acceptance") or []) or "- (see SPEC.md)"
         test_command = task.get("test_command") or \
-            "your test file(s), e.g. `npx jest <your-test-file>`"
+            "your test file(s) with the project's own test runner"
+        regression_entry = ((recon.get("commands") or {}).get("regression") or {})
+        must_keep_working = regression_entry.get("command") \
+            or "Run the project test suite if one exists."
+        owner_files = task.get("owner_files") or []
+        files_to_read = task.get("files_to_read") or owner_files
+        stacks = [entry.get("stack", "") for entry in (recon.get("stacks") or [])]
+        if brownfield:
+            rules_text = (self.repo_root / "AGENTS.worker.md").read_text(encoding="utf-8")
+            worker_rules = "\n## WORKING RULES (mandatory)\n\n" + rules_text.strip() + "\n"
+            conventions = recon.get("conventions") or []
+            if conventions:
+                context_files = ("This is an existing repository; its own conventions "
+                                 f"files apply: {', '.join(conventions)}. Read them but "
+                                 "do not modify them.")
+            else:
+                context_files = ("This is an existing repository; respect its existing "
+                                 "patterns, tests, and style.")
+        else:
+            worker_rules = ""
+            context_files = ("Read AGENTS.md first; it defines the mandatory working "
+                             "rules for this swarm.")
+        stack_rules = stack_rules_block(
+            stacks, has_package_json=(self.project_root / "package.json").exists())
         prompt = template.format(
+            context_files=context_files,
+            worker_rules=worker_rules,
+            stack_rules=stack_rules,
             task_id=task["id"],
             project_root=str(self.project_root),
-            owner_files="\n".join(f"- {f}" for f in task.get("owner_files") or []) or "(none listed)",
+            owner_files="\n".join(f"- {f}" for f in owner_files) or "(none listed)",
+            files_to_read="\n".join(f"- {f}" for f in files_to_read) or "(none listed)",
             spec=spec,
             acceptance=acceptance,
             test_command=test_command,
-            must_keep_working="Run the project test suite if one exists.",
+            must_keep_working=must_keep_working,
         )
         return prompt + attempt_context
 

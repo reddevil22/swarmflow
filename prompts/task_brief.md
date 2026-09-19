@@ -1,7 +1,6 @@
-# Worker task brief template
+# Worker task brief
 
-Read AGENTS.md first; it defines the mandatory working rules for this swarm.
-Other workers are editing other files concurrently - stay strictly inside your ownership.
+{context_files}
 
 TASK ID: {task_id}
 PROJECT ROOT: {project_root}
@@ -9,30 +8,26 @@ PROJECT ROOT: {project_root}
 FILES YOU OWN (create/edit only these):
 {owner_files}
 
+STUDY FIRST (existing files relevant to this task; read before editing):
+{files_to_read}
+
 SPECIFICATION:
 {spec}
 
 ACCEPTANCE CHECKS (must all hold when done):
 {acceptance}
 
-MUST KEEP WORKING (do not break these; run them if provided):
+MUST KEEP WORKING (the control plane runs this after your wave; do not break it):
 {must_keep_working}
 
-## ENVIRONMENT RULES (violations cause rejection)
-
-- This project uses ONLY npm and npx. Never use pnpm, yarn, or bun.
-- Run EXACTLY this verification command, from the project root:
+## VERIFICATION
+- Run EXACTLY your verification command, once per fix cycle, never in a loop:
   `{test_command}`
-  Run it once per fix cycle, never in a loop, and never run other workers' tests.
-  Do not explore the repository for test setups or alternative commands.
-- NEVER read, grep, list, or explore node_modules. It is not your business.
-- NEVER modify package.json, package-lock.json, tsconfig.json, jest.config.js,
-  jest-e2e.json, or any file you do not own. Do not run npm/pnpm/yarn install;
-  dependencies are already installed.
-- Do not create scratch/temp files. If you created one by accident, delete it.
-- If the SAME failure persists after 3 fix attempts, stop immediately and report
-  a `BLOCKED` section with: the exact command, the exact output, and what you
-  tried. Do not keep probing.
-- Stay under ~40 tool calls. Reading your own code beats shell experimentation.
+- Do not run other workers' tests and do not explore the repository for test setups;
+  the control plane runs the full project suite after the wave.
 
-When done, run your tests from the project root and report using the required sections.
+{worker_rules}
+{stack_rules}
+
+When done, run your verification command from the project root and report using the
+required sections.
