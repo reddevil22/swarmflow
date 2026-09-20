@@ -7,6 +7,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Fixed
+- **Pre-existing untracked files no longer fail the audit**: the brownfield preflight
+  snapshots the run's untracked files (file-level, `git status -uall`, capped) into the
+  run state and the audit exempts them by exact path - only files created after the
+  preflight violate. The file-level listing also fixes untracked directories being
+  attributed as a single `dir/` entry (which mis-attributed owned files inside them).
+  Found by the sdlc-cli live run, where an operator's untracked note failed the wave and
+  the verifier relayed it as critical.
+- **The discrimination check isolates Python source trees**: the worktree's source roots
+  (config `discrimination.python_paths`, default `["src"]`) are prepended to `PYTHONPATH`
+  for parent-state runs, and a `find_spec` probe verifies every project package imports
+  from inside the worktree. An editable install that bypasses sys.path (front-inserted
+  `meta_path` finder) now yields `indeterminate` - printed as inconclusive under `warn`,
+  fail-closed under `enforce` - instead of a false `passes_at_parent`. `run_regression`
+  gained an `env` override for this; the probe outcome and the exempted untracked count
+  are recorded in the discrimination JSON and the evidence bundle.
 - **node:test (`tsx --test` / `node --test`) is a first-class runner**: TAP and spec
   reporter summaries (`# tests/# pass/# fail`, `ℹ tests/ℹ pass/ℹ fail`) give the
   regression gate an inventory and failure count, `not ok N - name` / `✖ name` lines

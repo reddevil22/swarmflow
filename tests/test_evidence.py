@@ -70,6 +70,7 @@ def test_bundle_contains_all_sections(tmp_path):
     (repo / ".swarmflow").mkdir()
     runstate.save_run(str(repo), {
         "mode": "brownfield", "branch": "swarmflow/demo", "base_sha": head,
+        "untracked_baseline": ["docs/implementation-priorities.md"],
         "regression": {"baseline": {"rc": 0, "failures": None,
                                     "tests_ran": 3,
                                     "fingerprints": ["tests/test_app.py::test_ok"],
@@ -113,6 +114,8 @@ def test_bundle_contains_all_sections(tmp_path):
         json.dumps({
             "version": 1, "wave": 1, "base_sha_short": "abc1234567",
             "red_parent": False, "indeterminate": False,
+            "python_probe": {"attempted": True, "launched": True,
+                             "candidates": ["pkgmod"], "escaped": []},
             "copied": [{"path": "tests/test_app.py", "sha256": "x"}],
             "counts": {"fails_at_parent": 1, "passes_at_parent": 1},
             "files": [

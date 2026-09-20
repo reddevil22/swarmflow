@@ -115,7 +115,7 @@ def _call(config, prompt: str) -> dict:
     return _frontier(config).complete(prompt)
 
 
-def _gate_summary(project_root: str) -> str:
+def _gate_summary(project_root: str, ignores: list | None = None) -> str:
     """Compact view of the latest gate artifacts for one task-scoped prompt."""
     evidence_dir = Path(project_root) / ".swarmflow" / "evidence"
     summary = {}
@@ -131,7 +131,9 @@ def _gate_summary(project_root: str) -> str:
             summary[key] = {"unreadable": files[-1].name}
     try:
         state = runstate.load_run(project_root)
-        summary["audit"] = audit(project_root, ignores=state.get("audit_ignores") or [])
+        summary["audit"] = audit(project_root,
+                                 ignores=(state.get("audit_ignores") or [])
+                                 + list(ignores or []))
     except Exception as exc:                      # never block a verify on the summary
         summary["audit"] = {"error": str(exc)}
     return json.dumps(summary, indent=2)
@@ -237,7 +239,7 @@ def verify_task(config, project_root: str, ledger, task_id: str) -> dict:
         ("Worker report", report, False),
         ("Owned files", "\n".join(owned) or "(none present)", False),
         ("Owned file contents (worker-authored)", _file_block(root, owned), False, 6000),
-        ("Latest gate results", _gate_summary(root), False),
+        ("Latest gate results", _gate_summary(root, (config.get("audit") or {}).get("ignore_extra")), False),
     ]
     prompt = _compose("verifier.md", sections)
     result = _call(config, prompt)

@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+from swarmflow import runstate
 from swarmflow.audit import audit, freeze, seal
 
 
@@ -173,3 +174,40 @@ def test_carry_over_without_previous_baseline_full_bakes(tmp_path):
     info = freeze(str(repo), {}, mode="brownfield", carry_over=True)
     assert info["carried"] == 0
     assert info["entries"] == 1
+
+
+def test_untracked_baseline_exempts_preexisting_files(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    _commit_all(repo, "base")
+    (repo / "notes.md").write_text("pre-existing note", encoding="utf-8")
+    freeze(str(repo), {"T1": ["owned.py"]}, mode="brownfield")
+
+    assert audit(str(repo))["violations"], "without a baseline the file violates"
+    result = audit(str(repo), untracked_baseline=["notes.md"])
+    assert result["ok"] is True
+
+    # a file appearing after the preflight still violates
+    (repo / "stray.txt").write_text("created during the run", encoding="utf-8")
+    result = audit(str(repo), untracked_baseline=["notes.md"])
+    kinds = {(violation["kind"], violation["path"]) for violation in result["violations"]}
+    assert ("added_unowned", "stray.txt") in kinds
+    assert not any(path == "notes.md" for _, path in kinds)
+
+
+def test_untracked_baseline_reads_runstate_and_matches_literally(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    _commit_all(repo, "base")
+    (repo / "notes[1].md").write_text("brackets are a glob class", encoding="utf-8")
+    freeze(str(repo), {"T1": ["owned.py"]}, mode="brownfield")
+
+    runstate.save_run(str(repo), {"untracked_baseline": ["notes[1].md"]})
+    assert audit(str(repo))["ok"] is True          # exact match, not a glob
+    (repo / "notes1.md").write_text("a glob would have matched this", encoding="utf-8")
+    kinds = {violation["path"] for violation in audit(str(repo))["violations"]}
+    assert kinds == {"notes1.md"}

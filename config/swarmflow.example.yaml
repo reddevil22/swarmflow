@@ -90,6 +90,9 @@ discrimination:
   enabled: true           # brownfield runs with a base_sha only
   mode: warn              # warn (evidence only) | enforce (non-discriminating tests fail the wave)
   link_dirs: ["node_modules"]   # directories linked into the worktree (npm layout)
+  python_paths: ["src"]   # worktree roots prepended to PYTHONPATH for python runs
+                          # (flat layouts can add "."; an imports-from-outside probe
+                          # still guards against editable installs that bypass sys.path)
   timeout_s: 900          # per test-command run inside the parent worktree
   max_test_files: 20      # cap on files checked per wave
   skip_patterns: []       # fnmatch; add browser-e2e globs when they need a live server

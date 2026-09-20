@@ -656,6 +656,51 @@ def test_missing_frozen_baseline_refuses_the_wave(tmp_path, monkeypatch, capsys)
 
 
 @pytest.mark.skipif(not GIT, reason="git not available")
+def test_preexisting_untracked_files_do_not_fail_the_wave(tmp_path, monkeypatch, capsys):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    (repo / "notes.md").write_text("pre-existing operator note", encoding="utf-8")
+    config = _config(tmp_path)
+    plan_path = _brownfield_plan(tmp_path, repo)
+    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+    assert "exempt from the scope audit" in capsys.readouterr().out
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_new_untracked_file_during_the_wave_still_fails(tmp_path, monkeypatch):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    (repo / "notes.md").write_text("pre-existing operator note", encoding="utf-8")
+    config = _config(tmp_path)
+    plan_path = _brownfield_plan(tmp_path, repo)
+
+    class StrayRunner:
+        def __init__(self, ledger):
+            self.ledger = ledger
+
+        def run_wave(self, wave, concurrency=None):
+            (repo / "stray.txt").write_text("created during the wave", encoding="utf-8")
+            results = []
+            for task in self.ledger.list_tasks(status="queued", wave=wave):
+                self.ledger.set_status(task["id"], "delivered")
+                results.append({"task_id": task["id"], "outcome": "delivered",
+                                "missing": [], "scan": {"turns": 1, "out_tokens": 10},
+                                "server_launches": []})
+            return results
+
+    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: StrayRunner(ledger))
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 1
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    events = [event for event in ledger.events("T1", limit=30)
+              if event["kind"] == "scope-violation"]
+    ledger.close()
+    assert any("stray.txt" in event["detail"] for event in events)
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
 def test_brownfield_wave_aborts_without_node_modules(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

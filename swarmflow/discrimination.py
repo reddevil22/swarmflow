@@ -99,6 +99,93 @@ def _unique_name_hit(fingerprint: str, texts: dict) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
+PYTHON_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg")
+PYTHON_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+PYTHON_NAME_EXCLUDE = {"tests", "test", "docs", "node_modules", "__pycache__",
+                       "venv", ".venv", "build", "dist", "site-packages"}
+PROBE_LINE = ("import importlib.util; s=importlib.util.find_spec('{name}'); "
+              "print(s.origin if s and s.origin else '')")
+
+
+def _under(path_text: str, root: Path) -> bool:
+    try:
+        return str(Path(path_text).resolve()).lower().startswith(
+            str(root.resolve()).lower() + os.sep)
+    except OSError:
+        return False
+
+
+def _python_prepare(project: Path, wt: Path, settings: dict) -> tuple:
+    """PYTHONPATH override + candidate package names for a python-looking project."""
+    roots = [str(root) for root in (settings.get("python_paths") or ["src"])]
+    looks_python = any((project / marker).exists() for marker in PYTHON_MARKERS)
+    prepend = []
+    names = []
+    for root in roots:
+        base = wt / root
+        if not base.is_dir():
+            continue
+        prepend.append(str(base))
+        if not looks_python and any(base.rglob("*.py")):
+            looks_python = True
+        for child in sorted(base.iterdir()):
+            if not child.is_dir() or child.name in PYTHON_NAME_EXCLUDE \
+                    or not PYTHON_NAME_RE.match(child.name):
+                continue
+            if any(child.rglob("*.py")) and child.name not in names:
+                names.append(child.name)
+    if not looks_python:
+        return None, [], []
+    if not prepend:
+        return None, names[:5], []
+    existing = os.environ.get("PYTHONPATH", "")
+    value = os.pathsep.join(prepend + ([existing] if existing else []))
+    return {"PYTHONPATH": value}, names[:5], prepend
+
+
+def _probe_interpreter(project: Path, command: str) -> str:
+    lowered = (command or "").strip().lower()
+    if lowered.startswith("poetry "):
+        return "poetry run python"
+    if lowered.startswith("uv "):
+        return "uv run python"
+    for name in (".venv", "venv"):
+        for candidate in ((project / name / "Scripts" / "python.exe"),
+                          (project / name / "bin" / "python")):
+            if candidate.exists():
+                return f'"{candidate}"'
+    return "python"
+
+
+def _probe_packages(project: Path, wt: Path, names: list, command: str,
+                    env_override: dict | None, timeout_s: float) -> dict:
+    """Verify that the project's own packages import from inside the worktree.
+
+    PYTHONPATH wins over path-entry editable installs; a front-inserted meta_path finder
+    bypasses sys.path entirely, so this probe - not the prepend - is the real guard."""
+    probe = {"attempted": bool(names), "launched": False, "candidates": names,
+             "escaped": []}
+    if not names:
+        return probe
+    interpreter = _probe_interpreter(project, command)
+    for name in names:
+        probe_cmd = f"{interpreter} -c \"{PROBE_LINE.format(name=name)}\""
+        result = run_regression(str(wt), probe_cmd,
+                                timeout_s=min(120.0, timeout_s or 120.0),
+                                env=env_override)
+        if result.get("rc") is None or _launch_failed(result):
+            return probe                       # launched stays False
+        probe["launched"] = True
+        lines = [line.strip() for line in (result.get("output") or "").splitlines()
+                 if line.strip()]
+        origin = lines[-1] if lines else ""
+        if origin and not _under(origin, wt) and (_under(origin, project)
+                                                 or "site-packages" in origin
+                                                 or "dist-packages" in origin):
+            probe["escaped"].append({"name": name, "origin": origin})
+    return probe
+
+
 def _remove_tree(wt: Path, project_root: Path, linked: list) -> list:
     """Delete the worktree safely: links first (never recursively), then the tree."""
     problems = []
@@ -188,12 +275,28 @@ def run_check(project_root: str, wave: int, tasks: list, config: dict,
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
             copied.append({"path": rel, "sha256": _hash_file(source)})
+        env_override, candidates, _prepend = _python_prepare(project, wt, settings)
+        probe = _probe_packages(project, wt, candidates, commands[0], env_override,
+                                float(settings.get("timeout_s", 900)))
+        early = {"version": 1, "wave": wave, "base_sha": base_sha,
+                 "base_sha_short": base_sha[:10], "parent": "base_sha",
+                 "worktree": str(wt), "indeterminate": True, "unattributable": False,
+                 "unattributable_files": [], "red_parent": False, "tested": 0,
+                 "copied": copied, "files": [], "counts": {}, "runs": [],
+                 "python_probe": probe}
+        if candidates and not probe["launched"]:
+            return dict(early, reason="python probe could not run; parent-state "
+                                      "isolation unverified")
+        if probe["escaped"]:
+            escaped = probe["escaped"][0]
+            return dict(early, reason=f"package {escaped['name']} imports from outside "
+                                      f"the worktree ({escaped['origin']})")
         for index, command in enumerate(commands[:3], start=1):
             evidence = (project / ".swarmflow" / "evidence"
                         / f"wave{wave}.discrimination.parent{index}.txt")
             result = run_regression(str(wt), command,
                                     timeout_s=float(settings.get("timeout_s", 900)),
-                                    evidence_path=str(evidence))
+                                    evidence_path=str(evidence), env=env_override)
             full_runs.append(result)
     finally:
         problems = _remove_tree(wt, project, linked)
@@ -292,6 +395,7 @@ def run_check(project_root: str, wave: int, tasks: list, config: dict,
               "worktree": str(wt), "indeterminate": indeterminate,
               "unattributable": bool(unattributable),
               "unattributable_files": unattributable,
+              "python_probe": probe,
               "red_parent": bool(baseline and baseline.get("rc") != 0),
               "reason": "; ".join(notes), "tested": len(files),
               "copied": copied, "files": files, "counts": counts,

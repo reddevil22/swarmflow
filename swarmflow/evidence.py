@@ -93,6 +93,12 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
         result = {"ok": False, "violations": [
             {"kind": "audit-error", "path": "", "detail": str(exc)[:300]}]}
     lines.append(f"- ok: {result['ok']}")
+    untracked_baseline = state.get("untracked_baseline") or []
+    if untracked_baseline:
+        preview = ", ".join(untracked_baseline[:3]) + \
+            (" ..." if len(untracked_baseline) > 3 else "")
+        lines.append(f"- pre-existing untracked files exempt from the audit: "
+                     f"{len(untracked_baseline)} ({preview})")
     lines.append("- note: .gitignore additions (.swarmflow/, logs/) are made by the "
                  "brownfield preflight, before the first freeze")
     for violation in result.get("violations", [])[:50]:
@@ -156,6 +162,11 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
             lines.append(f"- skipped: {check['skipped']}")
         else:
             counts = check.get("counts") or {}
+            probe = check.get("python_probe") or {}
+            if probe.get("attempted"):
+                lines.append(f"- python probe: candidates={len(probe.get('candidates') or [])} "
+                             f"launched={probe.get('launched')} "
+                             f"escaped={len(probe.get('escaped') or [])}")
             lines.append(f"- {latest.name}: base {(check.get('base_sha_short') or '?')}, "
                          f"copied {len(check.get('copied') or [])} file(s), "
                          f"red_parent={check.get('red_parent')}, "

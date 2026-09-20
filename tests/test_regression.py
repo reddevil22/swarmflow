@@ -297,6 +297,15 @@ def test_node_test_file_level_failure_is_path_shaped():
     assert report["fingerprints"] == ["/tmp/x/file.test.ts"]
 
 
+def test_run_regression_passes_env_overrides(tmp_path):
+    command = _script(tmp_path, "env.py",
+                      "import os\nprint('PYTHONPATH=' + os.environ.get('PYTHONPATH', ''))\n")
+    result = run_regression(str(tmp_path), command, timeout_s=30,
+                            env={"PYTHONPATH": "/custom/path"})
+    assert result["rc"] == 0
+    assert "PYTHONPATH=/custom/path" in result["output"]
+
+
 # ------------------------------------------------------------------ comparison
 
 def test_compare_green_to_red_is_regression():

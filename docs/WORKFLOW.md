@@ -37,7 +37,10 @@ Per wave boundary:
 1. full regression suite + MUST-KEEP-WORKING contract checks
 2. discrimination check: the wave's owned test files re-run at the run's base commit in
    a throwaway worktree (`evidence/wave<N>.discrimination.json`; `enforce` mode fails
-   the wave, `warn` records evidence)
+   the wave, `warn` records evidence). Python projects get their worktree source roots
+   prepended to PYTHONPATH (`discrimination.python_paths`) and an import probe; an
+   import that escapes the worktree (editable installs that bypass sys.path) makes the
+   check indeterminate rather than a silent false pass.
 3. requirement->test traceability matrix parsed from worker reports (roadmap - not
    implemented yet)
 4. verifier pass (frontier): `swarmflow verify --task <id>` per task, or the
@@ -83,7 +86,9 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    once (config override or recon) and **frozen in the control-plane state store**
    (`<state_dir>/runs/<hash-of-project>/run.json`, default `<repo>/state/`) together with
    mode/branch/base_sha. The project-side `.swarmflow/run.json` is a marked mirror that
-   nothing reads; a pre-upgrade run is adopted once (structural fields only).
+   nothing reads; a pre-upgrade run is adopted once (structural fields only). Pre-existing
+   untracked files are snapshotted (file-level) into the run and exempted from the scope
+   audit - only files created after the preflight can violate it.
 4. **Waves**: before each wave, freeze only that wave's owner map (per-wave ownership).
    The freeze **carries** the previous baseline's hashes for files the wave does not own
    (an edit made between waves stays visible; only an owning wave re-reads a file, and

@@ -5,7 +5,8 @@ import subprocess
 
 import pytest
 
-from swarmflow.recon import digest, ensure_gitignore_entries, git_state, recon
+from swarmflow.recon import (digest, ensure_gitignore_entries, git_state, recon,
+                             untracked_paths)
 
 
 def _git_available():
@@ -112,3 +113,22 @@ def test_ensure_gitignore_entries_is_idempotent(tmp_path):
     assert again == []
     content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
     assert content.count(".swarmflow/") == 1
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_untracked_paths_are_file_level_and_capped(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+    (repo / "newdir").mkdir()
+    (repo / "newdir" / "a.py").write_text("a", encoding="utf-8")
+    (repo / "newdir" / "b.py").write_text("b", encoding="utf-8")
+
+    assert sorted(untracked_paths(repo)) == ["newdir/a.py", "newdir/b.py"]
+    assert untracked_paths(repo, cap=1) == ["newdir/a.py"]
+    state = git_state(repo)
+    assert sorted(state["untracked_files"]) == ["newdir/a.py", "newdir/b.py"]
+    assert state["untracked_count"] == 2

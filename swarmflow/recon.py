@@ -48,6 +48,30 @@ def _git(project_root: Path, *args: str, timeout: int = 30):
         return False, ""
 
 
+MAX_UNTRACKED = 2000
+
+
+def untracked_paths(project_root, cap: int = MAX_UNTRACKED) -> list:
+    """File-level untracked paths (`-uall`, so a new directory lists its files).
+
+    Capped for very large trees; anything beyond the cap simply keeps violating the
+    scope audit (the conservative direction)."""
+    ok, porcelain = _git(Path(project_root), "status", "--porcelain", "-uall")
+    if not ok:
+        return []
+    paths = []
+    for line in porcelain.splitlines():
+        if not line.startswith("?? "):
+            continue
+        rel = line[3:].strip()
+        if rel.startswith('"') and rel.endswith('"'):
+            rel = rel[1:-1].encode("latin-1", "replace").decode("unicode_escape")
+        paths.append(rel.replace("\\", "/"))
+        if len(paths) >= cap:
+            break
+    return paths
+
+
 def git_state(project_root) -> dict:
     """Git facts. `dirty_tracked` counts only tracked modifications (not untracked)."""
     root = Path(project_root)
@@ -60,7 +84,7 @@ def git_state(project_root) -> dict:
     ok_count, commits = _git(root, "rev-list", "--count", "HEAD")
     lines = [line for line in porcelain.splitlines() if line.strip()]
     dirty = [line for line in lines if not line.startswith("??")]
-    untracked = [line for line in lines if line.startswith("??")]
+    untracked = untracked_paths(root)
     return {
         "is_git": True,
         "head": head if ok_head else "",
@@ -68,6 +92,7 @@ def git_state(project_root) -> dict:
         "commits": int(commits) if ok_count and commits.isdigit() else 0,
         "dirty_tracked": dirty[:50],
         "untracked_count": len(untracked),
+        "untracked_files": untracked,
     }
 
 

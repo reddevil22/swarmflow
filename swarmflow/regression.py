@@ -10,6 +10,7 @@ When identity cannot be compared the gate says so and - under the default strict
 fails closed.
 """
 
+import os
 import re
 import subprocess
 import time
@@ -323,8 +324,11 @@ def parse_report(output: str) -> dict:
 
 
 def run_regression(project_root: str, command: str, timeout_s: float = 900,
-                   evidence_path: str | None = None) -> dict:
+                   evidence_path: str | None = None, env: dict | None = None) -> dict:
     """Run the suite via the shell (user-visible commands, .cmd shims), capture output.
+
+    ``env`` overrides individual environment variables (the discrimination check uses it
+    to prepend the worktree's source roots to PYTHONPATH).
 
     On timeout the whole process tree is killed, not just the shell: a hung watch-mode
     suite otherwise keeps running (and keeps holding ports) after the gate gives up.
@@ -332,11 +336,12 @@ def run_regression(project_root: str, command: str, timeout_s: float = 900,
     started = time.time()
     result = {"command": command, "rc": None, "failures": None, "timeout": False,
               "duration_s": None, "ok": False, "output": ""}
+    run_env = {**os.environ, **(env or {})}
     try:
         proc = subprocess.Popen(command, shell=True, cwd=str(project_root),
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace",
-                                **spawn_flags())
+                                env=run_env, **spawn_flags())
         try:
             full, _ = proc.communicate(timeout=timeout_s)
             full = full or ""

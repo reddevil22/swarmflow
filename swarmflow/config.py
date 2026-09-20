@@ -66,6 +66,7 @@ DEFAULTS = {
         "enabled": True,        # wave tests re-run against the parent state
         "mode": "warn",         # warn (evidence) | enforce (fail the wave)
         "link_dirs": ["node_modules"],
+        "python_paths": ["src"],  # worktree roots prepended to PYTHONPATH (python runs)
         "timeout_s": 900,
         "max_test_files": 20,
         "skip_patterns": [],    # fnmatch; e.g. browser-e2e specs needing a live server

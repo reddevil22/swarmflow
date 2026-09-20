@@ -163,13 +163,18 @@ def seal(project_root: str, owners: dict) -> dict:
     return {"sealed": sealed, "dropped": dropped}
 
 
-def audit(project_root: str, ignores: list[str] | None = None) -> dict:
+def audit(project_root: str, ignores: list[str] | None = None,
+          untracked_baseline: list | None = None) -> dict:
     """Compare the current tree against the frozen baseline.
 
     Violation kinds: deleted_frozen, modified_frozen, added_unowned, no_baseline,
     corrupt_baseline, no_git. Owned files (from the baseline owner map) are exempt.
+    Untracked files recorded in the run state's ``untracked_baseline`` (pre-existing
+    when the run started) are exempt by exact path; the parameter overrides that.
     """
     root = Path(project_root).resolve()
+    if untracked_baseline is None:
+        untracked_baseline = runstate.load_run(str(root)).get("untracked_baseline") or []
     baseline = runstate.load_frozen(str(root))
     if baseline is None:
         path = runstate.frozen_path(str(root))
@@ -180,7 +185,7 @@ def audit(project_root: str, ignores: list[str] | None = None) -> dict:
         return {"ok": False, "violations": [
             {"kind": "no_baseline", "path": str(path), "detail": "run freeze first"}]}
     if baseline.get("mode") == "brownfield":
-        return _audit_brownfield(root, baseline, ignores)
+        return _audit_brownfield(root, baseline, ignores, untracked_baseline)
     frozen = baseline.get("files", {})
     owners = baseline.get("owners", {})
     effective = baseline.get("ignores") or (DEFAULT_IGNORES + list(ignores or []))
@@ -219,26 +224,20 @@ def _git_tracked(root: Path) -> list:
 
 
 def _git_untracked(root: Path) -> list:
-    ok, out = _git(root, "status", "--porcelain")
-    if not ok:
-        return []
-    entries = []
-    for line in out.splitlines():
-        if line.startswith("?? "):
-            rel = line[3:].strip()
-            if rel.startswith('"') and rel.endswith('"'):
-                rel = rel[1:-1].encode("latin-1", "replace").decode("unicode_escape")
-            entries.append(rel.replace("\\", "/"))
-    return entries
+    from .recon import untracked_paths
+    return untracked_paths(root)
 
 
 def _ignored(rel: str, ignores: list | None) -> bool:
     return any(fnmatch.fnmatch(rel, pattern) for pattern in (ignores or []))
 
 
-def _audit_brownfield(root: Path, baseline: dict, ignores: list | None = None) -> dict:
+def _audit_brownfield(root: Path, baseline: dict, ignores: list | None = None,
+                      untracked_baseline: list | None = None) -> dict:
     """Git-based audit: tracked hashes must match unless owned; untracked-unowned is
-    a violation; gitignored files are invisible to both lists by construction."""
+    a violation; gitignored files are invisible to both lists by construction.
+    Pre-existing untracked paths (run state) are exempt by exact path."""
+    preexisting = set(untracked_baseline or [])
     ok, _ = _git(root, "rev-parse", "--is-inside-work-tree")
     if not ok:
         return {"ok": False, "violations": [
@@ -260,7 +259,8 @@ def _audit_brownfield(root: Path, baseline: dict, ignores: list | None = None) -
         except OSError:
             violations.append({"kind": "deleted_frozen", "path": rel})
     for rel in _git_untracked(root):
-        if rel in owners or rel in frozen or _ignored(rel, ignores):
+        if rel in owners or rel in frozen or rel in preexisting \
+                or _ignored(rel, ignores):
             continue
         if rel.split("/", 1)[0] in (".swarmflow", "logs", "state"):
             continue  # swarmflow's own artifacts, expected to be gitignored

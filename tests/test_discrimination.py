@@ -1,5 +1,6 @@
 """Discrimination check: parent-state worktree runs and verdict classification."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -7,8 +8,10 @@ import sys
 import pytest
 
 from swarmflow import cli
-from swarmflow.discrimination import run_check
+from swarmflow.discrimination import (_probe_interpreter, _probe_packages,
+                                      _python_prepare, run_check)
 from swarmflow.ledger import Ledger
+from swarmflow.regression import run_regression
 
 GIT = shutil.which("git") is not None
 pytestmark = pytest.mark.skipif(not GIT, reason="git not available")
@@ -270,6 +273,122 @@ def test_unattributable_parent_is_fail_closed_under_enforce(tmp_path, monkeypatc
     ledger.close()
     assert warn_state == "warn"
     assert enforce_state == "fail"
+
+
+def _python_fixture(tmp_path, wt_value: int, live_value: int):
+    """Project + worktree-shaped dirs with the same package at different contents."""
+    project = tmp_path / "proj"
+    (project / "src" / "pkgmod").mkdir(parents=True)
+    (project / "src" / "pkgmod" / "__init__.py").write_text(f"VALUE = {live_value}\n",
+                                                            encoding="utf-8")
+    (project / "pyproject.toml").write_text("[project]\nname='pkgmod'\n", encoding="utf-8")
+    wt = tmp_path / "wt"
+    (wt / "src" / "pkgmod").mkdir(parents=True)
+    (wt / "src" / "pkgmod" / "__init__.py").write_text(f"VALUE = {wt_value}\n",
+                                                       encoding="utf-8")
+    return project, wt
+
+
+def test_pythonpath_prepend_beats_a_live_import_path(tmp_path, monkeypatch):
+    """The reproduced false negative: without the prepend the live package wins."""
+    project, wt = _python_fixture(tmp_path, wt_value=1, live_value=2)
+    check = wt / "check.py"
+    check.write_text("import pkgmod\nassert pkgmod.VALUE == 2\n", encoding="utf-8")
+    command = f'{sys.executable} check.py'
+    monkeypatch.setenv("PYTHONPATH", str(project / "src"))
+
+    without = run_regression(str(wt), command, timeout_s=30)
+    assert without["rc"] == 0                    # the live (new) code was imported
+
+    prepended = os.pathsep.join([str(wt / "src"), str(project / "src")])
+    with_prepend = run_regression(str(wt), command, timeout_s=30,
+                                  env={"PYTHONPATH": prepended})
+    assert with_prepend["rc"] != 0               # the worktree (parent) code wins
+
+
+def test_python_prepare_prepends_existing_roots_only(tmp_path):
+    project, wt = _python_fixture(tmp_path, wt_value=1, live_value=1)
+    env, names, prepend = _python_prepare(project, wt, {})
+    assert env and env["PYTHONPATH"].split(os.pathsep)[0] == str(wt / "src")
+    assert names == ["pkgmod"]
+    assert prepend == [str(wt / "src")]
+
+
+def test_python_prepare_skips_non_python_projects(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "package.json").write_text("{}", encoding="utf-8")
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    assert _python_prepare(project, wt, {}) == (None, [], [])
+
+
+def test_probe_interpreter_follows_the_test_command(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    assert _probe_interpreter(project, "poetry run pytest -q") == "poetry run python"
+    assert _probe_interpreter(project, "uv run pytest") == "uv run python"
+    venv_python = project / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    assert str(venv_python) in _probe_interpreter(project, "python -m pytest -q")
+
+
+def test_probe_catches_a_meta_path_shadow(tmp_path, monkeypatch):
+    """A front-inserted finder bypasses PYTHONPATH; the probe must still catch it."""
+    project, wt = _python_fixture(tmp_path, wt_value=1, live_value=2)
+    hook_dir = tmp_path / "hook"
+    hook_dir.mkdir()
+    init = project / "src" / "pkgmod" / "__init__.py"
+    (hook_dir / "sitecustomize.py").write_text(
+        "import importlib.util, sys\n"
+        "class F:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'pkgmod':\n"
+        "            return importlib.util.spec_from_file_location('pkgmod', r'%s')\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, F())\n" % init,
+        encoding="utf-8")
+    env = {"PYTHONPATH": os.pathsep.join([str(wt / "src"), str(hook_dir)])}
+
+    probe = _probe_packages(project, wt, ["pkgmod"], "python -m pytest -q", env, 60)
+
+    assert probe["launched"] is True
+    assert probe["escaped"] and probe["escaped"][0]["name"] == "pkgmod"
+
+
+def test_run_check_marks_escaped_imports_indeterminate(tmp_path, monkeypatch):
+    repo, base, command = _tap_repo(tmp_path, {
+        "tests/test_tap.py": "test('bounds rejects zero', () => {});\n",
+        "src/pkgmod/__init__.py": "VALUE = 1\n",
+        "pyproject.toml": "[project]\nname='pkgmod'\n"})
+    monkeypatch.setattr("swarmflow.discrimination._probe_packages", lambda *a, **k: {
+        "attempted": True, "launched": True, "candidates": ["pkgmod"],
+        "escaped": [{"name": "pkgmod", "origin": str(repo / "src" / "pkgmod")}]})
+
+    result = run_check(str(repo), 1, [{"id": "T1", "owner_files": ["tests/test_tap.py"],
+                                       "test_command": command}],
+                       _config(), {"base_sha": base})
+
+    assert result["indeterminate"] is True
+    assert "imports from outside the worktree" in result["reason"]
+    assert result["python_probe"]["escaped"]
+
+
+def test_run_check_marks_an_unlaunchable_probe_indeterminate(tmp_path, monkeypatch):
+    repo, base, command = _tap_repo(tmp_path, {
+        "tests/test_tap.py": "test('bounds rejects zero', () => {});\n",
+        "src/pkgmod/__init__.py": "VALUE = 1\n",
+        "pyproject.toml": "[project]\nname='pkgmod'\n"})
+    monkeypatch.setattr("swarmflow.discrimination._probe_packages", lambda *a, **k: {
+        "attempted": True, "launched": False, "candidates": ["pkgmod"], "escaped": []})
+
+    result = run_check(str(repo), 1, [{"id": "T1", "owner_files": ["tests/test_tap.py"],
+                                       "test_command": command}],
+                       _config(), {"base_sha": base})
+
+    assert result["indeterminate"] is True
+    assert "probe could not run" in result["reason"]
 
 
 def test_leftover_worktree_is_cleaned(tmp_path):

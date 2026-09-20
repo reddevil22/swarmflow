@@ -164,6 +164,7 @@ def _brownfield_preflight(plan: dict, project_root: Path, plan_path: str,
                  "updated_at": now})
     data.setdefault("created_at", now)
     data.setdefault("audit_ignores", audit_ignores)
+    data.setdefault("untracked_baseline", state.get("untracked_files") or [])
     command = override or detected or data.get("regression_command", "")
     if command:
         data["regression_command"] = command
@@ -177,6 +178,11 @@ def _brownfield_preflight(plan: dict, project_root: Path, plan_path: str,
     runstate.write_mirror(str(project_root), data)
     print(f"brownfield preflight ok: branch {branch} ({action}), "
           f"base {str(state.get('head') or '')[:10]}, recon written, gate command frozen")
+    exempted = data.get("untracked_baseline") or []
+    if exempted:
+        preview = ", ".join(exempted[:3]) + (" ..." if len(exempted) > 3 else "")
+        print(f"pre-existing untracked file(s) exempt from the scope audit: "
+              f"{len(exempted)} ({preview})")
     stale = find_stale(str(project_root), process_snapshot(), config.get("sweep") or {})
     if stale:
         for record in stale:
