@@ -39,7 +39,9 @@ Frontier-role exit codes (shared by `plan`/`verify`/`accept`): `0` positive verd
 `1` the model responded but the result is unusable or negative (invalid plan,
 `needs_fix`, `rejected`), `2` infrastructure (no backend configured, transport error,
 nothing to verify/accept). Each call writes its raw output to
-`<project>/.swarmflow/evidence/{plan,verify_<id>,accept}.json`.
+`<project>/.swarmflow/evidence/{plan,verify_<id>,accept}.json`; `swarmflow plan` also
+persists the PRD it used to `<project>/.swarmflow/PRD.md` (hash-pinned) so verifiers can
+compare the delivery against the original request.
 
 Brownfield (existing repositories):
 ```bash

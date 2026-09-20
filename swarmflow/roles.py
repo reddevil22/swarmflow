@@ -5,6 +5,7 @@ writes an artifact under `<project>/.swarmflow/evidence/` so failures stay audit
 every worker/tool-produced block is fenced as untrusted material.
 """
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -68,14 +69,38 @@ def _block(text: str, limit: int = MAX_BLOCK) -> str:
 
 
 def _compose(role_file: str, sections: list) -> str:
-    """Compose a role prompt. Sections are (title, text, trusted) triples."""
+    """Compose a role prompt. Sections are (title, text, trusted[, limit]) tuples."""
     prompt = (REPO_ROOT / "prompts" / role_file).read_text(encoding="utf-8")
     parts = [prompt, "", TRUST_NOTE, ""]
-    for title, text, trusted in sections:
+    for section in sections:
+        title, text, trusted = section[0], section[1], section[2]
+        limit = section[3] if len(section) > 3 else None
         parts.append(f"## {title}")
-        parts.append(text if trusted else _block(text))
+        parts.append(text if trusted else _block(text, limit or MAX_BLOCK))
         parts.append("")
     return "\n".join(parts)
+
+
+def _file_block(root: str, rels: list, per_file: int = 2500, total: int = 6000) -> str:
+    """Bounded contents of the given project files (worker-authored material)."""
+    chunks = []
+    used = 0
+    for rel in rels:
+        try:
+            if (Path(root) / rel).stat().st_size > 200_000:
+                continue
+            text = (Path(root) / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if len(text) > per_file:
+            text = text[:per_file] + "\n... (file truncated)"
+        if used + len(text) > total:
+            text = text[:max(0, total - used)] + "\n... (total cap reached)"
+        chunks.append(f"### {rel}\n{text}")
+        used += len(text)
+        if used >= total:
+            break
+    return "\n\n".join(chunks) or "(no owned file content available)"
 
 
 def _artifact(project_root: str, name: str, payload: dict) -> Path:
@@ -110,6 +135,25 @@ def _gate_summary(project_root: str) -> str:
     except Exception as exc:                      # never block a verify on the summary
         summary["audit"] = {"error": str(exc)}
     return json.dumps(summary, indent=2)
+
+
+def _prd_section(root: str):
+    """Trusted PRD section for verification, labelled by how well it is pinned."""
+    prd_path = Path(root) / ".swarmflow" / "PRD.md"
+    if not prd_path.exists():
+        return None
+    try:
+        prd_text = prd_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    recorded = runstate.load_run(root).get("prd_sha256")
+    if not recorded:
+        title = "PRD (operator-supplied; not verified against the plan)"
+    else:
+        digest = hashlib.sha256(prd_text.encode("utf-8")).hexdigest()
+        title = "PRD (frozen input)" if digest == recorded else \
+            "PRD (frozen input; WARNING: content changed since planning)"
+    return (title, prd_text, True)
 
 
 def plan_from_prd(config, prd_text: str, project_root: str, mode: str = "greenfield") -> dict:
@@ -183,13 +227,19 @@ def verify_task(config, project_root: str, ledger, task_id: str) -> dict:
         "id": task["id"], "module": task.get("module", ""),
         "status": task["status"], "acceptance": task.get("acceptance") or [],
         "test_command": task.get("test_command", "")}, indent=2)
-    prompt = _compose("verifier.md", [
+    sections = []
+    prd_section = _prd_section(root)
+    if prd_section:
+        sections.append(prd_section)
+    sections += [
         ("Task", task_brief, True),
         ("Spec (frozen, authoritative)", spec_text or "(no spec file)", True),
         ("Worker report", report, False),
-        ("Owned files present", "\n".join(owned) or "(none present)", False),
+        ("Owned files", "\n".join(owned) or "(none present)", False),
+        ("Owned file contents (worker-authored)", _file_block(root, owned), False, 6000),
         ("Latest gate results", _gate_summary(root), False),
-    ])
+    ]
+    prompt = _compose("verifier.md", sections)
     result = _call(config, prompt)
     payload = {"task_id": task_id, "backend": result.get("backend"),
                "usage": result.get("usage"), "raw": result.get("final_text", "")}

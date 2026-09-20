@@ -81,6 +81,24 @@ def _launch_failed(run: dict) -> bool:
     return any(marker in output for marker in LAUNCH_FAILED_MARKERS)
 
 
+def _unique_name_hit(fingerprint: str, texts: dict) -> str | None:
+    """The single copied file whose content carries the fingerprint as a test name.
+
+    A hit is a line equal to the name, or the name inside quotes/backticks (how test
+    frameworks declare it). Ambiguity (zero or several files) attributes nothing."""
+    needle = (fingerprint or "").strip()
+    if not needle:
+        return None
+    quoted = re.compile(r"['\"`]" + re.escape(needle) + r"['\"`]")
+    hits = []
+    for rel, text in texts.items():
+        for line in text.splitlines():
+            if line.strip() == needle or quoted.search(line):
+                hits.append(rel)
+                break
+    return hits[0] if len(hits) == 1 else None
+
+
 def _remove_tree(wt: Path, project_root: Path, linked: list) -> list:
     """Delete the worktree safely: links first (never recursively), then the tree."""
     problems = []
@@ -194,6 +212,22 @@ def run_check(project_root: str, wave: int, tasks: list, config: dict,
     green = bool(full_runs) and all(run.get("rc") == 0 for run in full_runs) and not indeterminate
     collected_nothing = any(run.get("rc") == 5 or "No tests found" in (run.get("output") or "")
                             for run in full_runs)
+    # A red run only exonerates a file when its failures name files; TAP-style runners
+    # report bare test names, so absence from their failure list proves nothing.
+    red_runs = [run for run in full_runs
+                if not run.get("timeout") and run.get("rc") not in (0, None)]
+    blind_red_runs = [run for run in red_runs
+                      if not any(("/" in entry or "\\" in entry)
+                                 for entry in (run.get("fingerprints") or [])
+                                 + (run.get("errors") or []))]
+    texts = {}
+    for rel in on_disk:
+        path = project / rel
+        try:
+            if path.stat().st_size <= 200_000:
+                texts[rel] = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
 
     files = []
     for rel in sorted(set(on_disk) | set(deleted)):
@@ -222,8 +256,23 @@ def run_check(project_root: str, wave: int, tasks: list, config: dict,
         elif green:
             entry["verdict"] = "passes_at_parent"
             entry["basis"] = "suite_green"
+        elif blind_red_runs and not collected_nothing and not indeterminate:
+            # path-less runner: a failure name that appears as a whole line in exactly
+            # one copied file attributes that failure to it.
+            hits = set()
+            for run in blind_red_runs:
+                for fingerprint in run.get("fingerprints") or []:
+                    if _unique_name_hit(fingerprint, texts) == rel:
+                        hits.add(fingerprint)
+            if hits:
+                entry["verdict"] = "preexisting_at_parent" \
+                    if hits <= baseline_fp else "fails_at_parent"
+                entry["basis"] = "name_found_in_copied_file"
+                entry["evidence"] = sorted(hits)[:5]
+            else:
+                entry["reason"] = "unattributable_failures"
         elif not collected_nothing and not indeterminate:
-            # Quiet runners only name failing files; absence from the failures of a
+            # Path-bearing runners name failing files; absence from their failures of a
             # completed run means the copied file passed (or was skipped).
             entry["verdict"] = "passes_at_parent"
             entry["basis"] = "absent_from_failures"
@@ -236,9 +285,13 @@ def run_check(project_root: str, wave: int, tasks: list, config: dict,
 
     counts = {verdict: sum(1 for entry in files if entry["verdict"] == verdict)
               for verdict in VERDICTS}
+    unattributable = [entry["path"] for entry in files
+                      if entry.get("reason") == "unattributable_failures"]
     result = {"version": 1, "wave": wave, "base_sha": base_sha,
               "base_sha_short": base_sha[:10], "parent": "base_sha",
               "worktree": str(wt), "indeterminate": indeterminate,
+              "unattributable": bool(unattributable),
+              "unattributable_files": unattributable,
               "red_parent": bool(baseline and baseline.get("rc") != 0),
               "reason": "; ".join(notes), "tested": len(files),
               "copied": copied, "files": files, "counts": counts,

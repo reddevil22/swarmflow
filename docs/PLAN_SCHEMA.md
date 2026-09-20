@@ -4,7 +4,9 @@ A plan is the machine-readable contract between the planner (frontier model) and
 swarm. `swarmflow plan-load --plan plan.yaml` validates it, scaffolds the project,
 writes per-task specs, and enqueues tasks in the ledger. `swarmflow plan --prd <file>
 --project <path>` produces the file with the frontier planner (the `project`/`mode` keys
-are injected from the CLI args, so the result loads as-is).
+are injected from the CLI args, so the result loads as-is) and persists the exact PRD
+text to `<project>/.swarmflow/PRD.md` with a recorded sha256, so verification can judge
+the delivery against both the spec and the original request.
 
 ## Top level
 

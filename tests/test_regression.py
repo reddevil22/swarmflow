@@ -237,6 +237,66 @@ def test_vitest_load_failure_is_an_error():
     assert report["errors"] == ["src/newmod.test.ts"]
 
 
+def test_node_test_tap_parsing():
+    output = ("TAP version 13\n"
+              "# Subtest: accepts a positive integer\n"
+              "ok 1 - accepts a positive integer\n"
+              "  ---\n  duration_ms: 0.9\n  type: 'test'\n  ...\n"
+              "# Subtest: rejects zero\n"
+              "not ok 2 - rejects zero\n"
+              "  ---\n  duration_ms: 0.2\n  ...\n"
+              "# Subtest: nested group\n"
+              "    not ok 3 - nested child # TODO\n"
+              "# Subtest: skipped one\n"
+              "ok 4 - skipped one # SKIP\n"
+              "1..4\n# tests 4\n# pass 2\n# fail 2\n# cancelled 1\n# skipped 1\n# todo 1\n")
+    report = parse_report(output)
+    assert report["family"] == "node_test"
+    assert report["failures"] == 2
+    assert report["tests_ran"] == 4                 # pass 2 + fail 2
+    assert report["skipped"] == 3                   # skipped 1 + todo 1 + cancelled 1
+    assert report["fingerprints"] == ["nested child", "rejects zero"]
+
+
+def test_node_test_matches_the_captured_real_output():
+    output = ("\n> prompt-scaler@1.0.0 test\n> tsx --test test/cli-options.test.ts\n\n"
+              "TAP version 13\n"
+              "# Subtest: accepts a positive integer\nok 1 - accepts a positive integer\n"
+              "  ---\n  duration_ms: 0.9577\n  type: 'test'\n  ...\n"
+              "# Subtest: two-sided bounds: below min throws with correct message\n"
+              "not ok 21 - two-sided bounds: below min throws with correct message\n"
+              "  ---\n  duration_ms: 0.1\n  ...\n"
+              "1..22\n# tests 22\n# suites 0\n# pass 18\n# fail 4\n# cancelled 0\n"
+              "# skipped 0\n# todo 0\n# duration_ms 218.939\n")
+    report = parse_report(output)
+    assert report["family"] == "node_test"
+    assert report["failures"] == 4
+    assert report["tests_ran"] == 22
+    assert "two-sided bounds: below min throws with correct message" \
+        in report["fingerprints"]
+
+
+def test_node_test_spec_reporter_parsing():
+    output = ("ℹ tests 22\nℹ suites 0\nℹ pass 18\nℹ fail 4\nℹ cancelled 0\n"
+              "ℹ skipped 0\nℹ todo 0\n"
+              "✖ two-sided bounds: above max throws with correct message (0.2859ms)\n"
+              "✖ rejects zero (0.2ms)\n")
+    report = parse_report(output)
+    assert report["family"] == "node_test"
+    assert report["failures"] == 4
+    assert report["tests_ran"] == 22
+    assert report["fingerprints"] == ["rejects zero",
+                                      "two-sided bounds: above max throws with correct message"]
+
+
+def test_node_test_file_level_failure_is_path_shaped():
+    output = "TAP version 13\nnot ok 1 - /tmp/x/file.test.ts\n# tests 1\n# pass 0\n# fail 1\n"
+    report = parse_report(output)
+    assert report["failures"] == 1
+    assert report["tests_ran"] == 1
+    assert report["fingerprints"] == ["/tmp/x/file.test.ts"]
+
+
 # ------------------------------------------------------------------ comparison
 
 def test_compare_green_to_red_is_regression():

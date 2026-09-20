@@ -1,6 +1,7 @@
 """swarmflow command line interface."""
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -256,9 +257,9 @@ def cmd_plan(args, config) -> int:
     if out.exists() and not args.force:
         print(f"{out} already exists (pass --force to overwrite)")
         return 2
+    prd_text = prd_path.read_text(encoding="utf-8")
     try:
-        result = plan_from_prd(config, prd_path.read_text(encoding="utf-8"),
-                               str(project_root), args.mode)
+        result = plan_from_prd(config, prd_text, str(project_root), args.mode)
     except RoleError as exc:
         print(f"PLAN FAILED: {exc}")
         return exc.code
@@ -267,6 +268,13 @@ def cmd_plan(args, config) -> int:
         return 2
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(yaml.safe_dump(result["plan"], sort_keys=False), encoding="utf-8")
+    prd_store = project_root / ".swarmflow" / "PRD.md"
+    prd_store.parent.mkdir(parents=True, exist_ok=True)
+    prd_store.write_text(prd_text, encoding="utf-8")
+    data = runstate.load_run(str(project_root))
+    data["prd_path"] = str(prd_store)
+    data["prd_sha256"] = hashlib.sha256(prd_text.encode("utf-8")).hexdigest()
+    runstate.save_run(str(project_root), data)
     if args.json:
         print(json.dumps({"plan": str(out), "tasks": result["tasks"],
                           "waves": result["waves"], "retried": result["retried"],
@@ -596,11 +604,21 @@ def _run_discrimination(project_root: str, wave: int, tasks: list, config: dict,
     ledger.record_event(tasks[0]["id"], "discrimination", json.dumps(counts)[:500])
     enforce = str(config["discrimination"].get("mode", "warn")).lower() == "enforce"
     non_discriminating = counts.get("passes_at_parent", 0) + counts.get("deleted_in_wave", 0)
+    unattributable = result.get("unattributable_files") or []
     state = "ok"
     if result.get("indeterminate"):
         state = "fail" if enforce else "warn"
         if not quiet:
             print(f"discrimination INDETERMINATE: {result.get('reason') or 'run failed'}")
+    elif unattributable:
+        state = "fail" if enforce else "warn"
+        if not quiet:
+            print(f"discrimination: {len(unattributable)} file(s) could not be attributed "
+                  f"at the parent state (path-less runner output) - discrimination not "
+                  f"demonstrated"
+                  f"{' (enforce -> failing the wave)' if enforce else ' (inconclusive)'}")
+            for path in unattributable[:10]:
+                print(f"  not_observed: {path}")
     elif non_discriminating:
         state = "fail" if enforce else "warn"
         if not quiet:
@@ -611,7 +629,7 @@ def _run_discrimination(project_root: str, wave: int, tasks: list, config: dict,
     elif not quiet:
         print(f"discrimination: {counts.get('fails_at_parent', 0)}/"
               f"{result.get('tested', 0)} changed test file(s) fail at base")
-    if not quiet:
+    if not quiet and not unattributable:
         for entry in result.get("files") or []:
             if entry["verdict"] in ("passes_at_parent", "deleted_in_wave", "error_at_parent"):
                 print(f"  {entry['verdict']}: {entry['path']}")

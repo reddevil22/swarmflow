@@ -35,6 +35,9 @@ def parse_failures(output: str) -> int | None:
     match = re.search(r"test result: FAILED\.\s+(\d+) passed;\s+(\d+) failed", output)
     if match:                                                          # cargo
         return int(match.group(2))
+    match = NODE_FAILS.search(output)                                  # node:test (TAP/spec)
+    if match:
+        return int(match.group(1))
     match = re.search(r"(\d+) failed", output)                         # pytest
     if match:
         return int(match.group(1))
@@ -51,6 +54,16 @@ def parse_failures(output: str) -> int | None:
 
 PYTEST_FAIL_LINE = re.compile(r"^(?:FAILED|ERROR)\s+(.+?)(?:\s+-\s+.*)?$", re.MULTILINE)
 PYTEST_ERROR_LINE = re.compile(r"^ERROR\s+(.+?)(?:\s+-\s+.*)?$", re.MULTILINE)
+NODE_TEST_FAIL_LINE = re.compile(r"^\s*not ok \d+ - (.+?)\s*$", re.MULTILINE)
+NODE_TEST_SPEC_FAIL = re.compile(r"^\s*✖\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*ms\))?\s*$",
+                                 re.MULTILINE)
+NODE_TEST_DIRECTIVE = re.compile(r"\s+#\s*(?:TODO|SKIP)\b.*$", re.IGNORECASE)
+TAP_MARKER = re.compile(r"^TAP version \d+\s*$", re.MULTILINE)
+NODE_SPEC_MARKER = re.compile(r"^ℹ (?:tests|pass|fail) \d+", re.MULTILINE)
+NODE_COUNT = re.compile(r"^(?:#|ℹ)\s*(pass|fail|skipped|todo|cancelled) (\d+)",
+                        re.MULTILINE)
+NODE_TOTAL = re.compile(r"^(?:#|ℹ)\s*tests (\d+)", re.MULTILINE)
+NODE_FAILS = re.compile(r"^(?:#|ℹ)\s*fail (\d+)", re.MULTILINE)
 JEST_FAIL_SUITE = re.compile(r"^\s*FAIL\s+(\S+)\s*$", re.MULTILINE)
 VITEST_FAIL = re.compile(r"^\s*FAIL\s+(\S+)\s+>\s+(.+?)\s*$", re.MULTILINE)
 VITEST_LOAD_FAIL = re.compile(r"^\s*FAIL\s+(\S+)\s*\[", re.MULTILINE)
@@ -136,12 +149,20 @@ def _cargo_fingerprints(output: str) -> list:
     return fingerprints
 
 
+def _node_test_fingerprints(output: str) -> list:
+    """node:test failing test names (TAP and spec reporters). Names only - the runner
+    does not print file paths, which the discrimination check accounts for."""
+    names = [NODE_TEST_DIRECTIVE.sub("", name) for name in NODE_TEST_FAIL_LINE.findall(output)]
+    names += [NODE_TEST_DIRECTIVE.sub("", name) for name in NODE_TEST_SPEC_FAIL.findall(output)]
+    return [name.strip()[:MAX_FINGERPRINT] for name in names if name.strip()]
+
+
 def parse_fingerprints(output: str) -> list:
     """Union of all family extractors, deduplicated and sorted."""
     clean = _sanitize(output)
     found = (_pytest_fingerprints(clean) + _jest_fingerprints(clean)
              + _compiler_fingerprints(clean) + _go_fingerprints(clean)
-             + _cargo_fingerprints(clean))
+             + _cargo_fingerprints(clean) + _node_test_fingerprints(clean))
     return sorted({name for name in found if name})
 
 
@@ -185,6 +206,24 @@ PYTEST_SUMMARY_COUNTS = re.compile(
     r"(\d+) (passed|failed|error|errors|skipped|xfailed|deselected)\b")
 PYTEST_BARE_SUMMARY = re.compile(
     r"^(?:\d+ (?:passed|failed|error|errors|skipped|xfailed|deselected)(?:, )?)+$")
+
+
+def _node_test_inventory(output: str) -> dict | None:
+    """Counts from node:test summaries (TAP `# pass N` or spec `ℹ pass N`).
+
+    Multi-file runs emit one summary per file; all of them are summed. Cancelled tests
+    are counted as skipped (they did not execute)."""
+    counts = {}
+    for kind, number in NODE_COUNT.findall(output):
+        counts[kind] = counts.get(kind, 0) + int(number)
+    total = NODE_TOTAL.search(output)
+    if not counts and not total:
+        return None
+    ran = counts.get("pass", 0) + counts.get("fail", 0)
+    if ran == 0 and total:
+        ran = int(total.group(1))
+    skipped = counts.get("skipped", 0) + counts.get("todo", 0) + counts.get("cancelled", 0)
+    return {"tests_ran": ran, "skipped": skipped}
 
 
 def _jest_inventory(output: str) -> dict | None:
@@ -264,6 +303,12 @@ def parse_report(output: str) -> dict:
     if VITEST_MARKER.search(clean):
         report["family"] = "vitest"
         found = _jest_inventory(clean)
+        if found:
+            report.update(found)
+        return report
+    if TAP_MARKER.search(clean) or NODE_SPEC_MARKER.search(clean):
+        report["family"] = "node_test"
+        found = _node_test_inventory(clean)
         if found:
             report.update(found)
         return report

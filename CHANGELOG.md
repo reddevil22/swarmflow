@@ -6,6 +6,27 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+- **node:test (`tsx --test` / `node --test`) is a first-class runner**: TAP and spec
+  reporter summaries (`# tests/# pass/# fail`, `ℹ tests/ℹ pass/ℹ fail`) give the
+  regression gate an inventory and failure count, `not ok N - name` / `✖ name` lines
+  become fingerprints (directives stripped, nested subtests included), and cancelled
+  tests count as skipped. Found by the prompt-scaler end-to-end run, which had a fully
+  blind regression gate for this stack.
+- **Discrimination verdicts cannot report a false `passes_at_parent` anymore**: file
+  observability is computed per run (a red run only exonerates a file when *its*
+  failures name files), path-less failures are attributed to a single copied test file
+  by unique quoted-literal name match, and anything unattributable is `not_observed` with
+  a result-level `unattributable` flag - which fails the wave closed under
+  `mode: enforce` and is printed as inconclusive under `warn`. This was the live run's
+  worst finding: a genuinely discriminating test was labeled non-discriminating.
+- The verifier now receives the owned files' **contents** (bounded, untrusted) and the
+  **pinned PRD**: `swarmflow plan` persists the exact PRD text to
+  `<project>/.swarmflow/PRD.md` and records its sha256, so verification can judge
+  spec-vs-delivery *and* delivery-vs-request (a mismatched or operator-supplied PRD is
+  labelled accordingly). Previously the verifier only saw a file list and the worker's
+  narrative, and planner-level spec defects were invisible by construction.
+
 ### Added
 - **Frontier roles wired** (`swarmflow/roles.py` + three commands):
   - `swarmflow plan --prd F --project P [--mode brownfield] [--out] [--load]` runs the

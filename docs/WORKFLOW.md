@@ -42,7 +42,10 @@ Per wave boundary:
    implemented yet)
 4. verifier pass (frontier): `swarmflow verify --task <id>` per task, or the
    `wave-run --verify` stage over a wave's delivered tasks (`verify.enabled` in config,
-   capped by `verify.max_tasks`). A `pass` moves the task to `verified`; `fail`/`needs_fix`
+   capped by `verify.max_tasks`). The material is the task row, the frozen spec, the
+   pinned PRD (`<project>/.swarmflow/PRD.md`, hash-checked against the run state if
+   `swarmflow plan` wrote it), the worker report, the owned files' contents and the
+   latest gate results. A `pass` moves the task to `verified`; `fail`/`needs_fix`
    moves it to `needs_fix` and the findings are printed + stored in `evidence/verify_<id>.json`.
    Recovery is a **fresh plan producing new task ids** - `wave-run` only dispatches `queued`.
 5. new tasks (fixes/retries) are appended to the current or next wave

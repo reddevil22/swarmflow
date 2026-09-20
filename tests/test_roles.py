@@ -1,11 +1,12 @@
 """Frontier roles: planner/verifier/acceptance orchestration (network-free)."""
 
+import hashlib
 import json
 
 import pytest
 import yaml
 
-from swarmflow import cli
+from swarmflow import cli, runstate
 from swarmflow.frontier import FrontierError
 from swarmflow.ledger import Ledger
 from swarmflow.roles import RoleError, _extract_json, plan_from_prd
@@ -158,6 +159,7 @@ def _delivered_task(tmp_path, status="delivered", with_spec=True, with_trace=Tru
         ledger.set_status("T1", status, worker_trace=trace,
                           verdict='{"outcome": "delivered"}')
     ledger.close()
+    (project / "a.py").write_text("export const MARKER_OWNED = 1;\n", encoding="utf-8")
     return project
 
 
@@ -231,7 +233,8 @@ def test_untrusted_material_is_fenced_and_sanitized(tmp_path, monkeypatch):
     prompt = backend.prompts[0]
     assert "<untrusted>" in prompt and "</untrusted>" in prompt
     assert "</untrusted_>" in prompt                       # the injected tag was neutralized
-    assert prompt.count("</untrusted>") == 3               # report, files, gates only
+    # report, owned-file list, owned-file contents, gate results
+    assert prompt.count("</untrusted>") == 4
 
 
 def test_accept_moves_only_this_projects_verified_tasks(tmp_path, monkeypatch):
@@ -272,6 +275,72 @@ def test_accept_without_verified_tasks_is_infrastructure_error(tmp_path, monkeyp
     assert cli.main(["--config", str(_config(tmp_path)), "accept",
                      "--project", str(project)]) == 2
     assert backend.prompts == []
+
+
+def test_verify_prompt_includes_owned_file_contents(tmp_path, monkeypatch):
+    _delivered_task(tmp_path)
+    backend = _patch(monkeypatch, FakeBackend(_verdict("pass")))
+    assert cli.main(["--config", str(_config(tmp_path)), "verify", "--task", "T1"]) == 0
+    prompt = backend.prompts[0]
+    assert "MARKER_OWNED" in prompt
+    assert "Owned file contents (worker-authored)" in prompt
+
+
+def test_large_owned_files_are_truncated(tmp_path, monkeypatch):
+    project = _delivered_task(tmp_path)
+    (project / "a.py").write_text("X" * 4000, encoding="utf-8")
+    backend = _patch(monkeypatch, FakeBackend(_verdict("pass")))
+    assert cli.main(["--config", str(_config(tmp_path)), "verify", "--task", "T1"]) == 0
+    prompt = backend.prompts[0]
+    assert "(file truncated)" in prompt
+    assert "X" * 3000 not in prompt
+
+
+def test_prd_section_labels(tmp_path, monkeypatch):
+    project = _delivered_task(tmp_path)
+    prd = project / ".swarmflow" / "PRD.md"
+    prd.write_text("the frozen prd", encoding="utf-8")
+    config = _config(tmp_path)
+
+    backend = _patch(monkeypatch, FakeBackend(_verdict("pass")))
+    assert cli.main(["--config", str(config), "verify", "--task", "T1"]) == 0
+    assert "operator-supplied" in backend.prompts[0]
+
+    runstate.save_run(str(project.resolve()), {
+        "prd_sha256": hashlib.sha256(b"the frozen prd").hexdigest()})
+    backend = _patch(monkeypatch, FakeBackend(_verdict("pass")))
+    assert cli.main(["--config", str(config), "verify", "--task", "T1"]) == 0
+    assert "PRD (frozen input)" in backend.prompts[0]
+
+    prd.write_text("changed after planning", encoding="utf-8")
+    backend = _patch(monkeypatch, FakeBackend(_verdict("pass")))
+    assert cli.main(["--config", str(config), "verify", "--task", "T1"]) == 0
+    assert "WARNING: content changed" in backend.prompts[0]
+
+
+def test_cli_plan_persists_the_prd(tmp_path, monkeypatch):
+    _patch(monkeypatch, FakeBackend(_plan_json()))
+    project = tmp_path / "proj"
+    project.mkdir()
+    prd = tmp_path / "prd.md"
+    prd.write_text("the prd body", encoding="utf-8")
+    assert cli.main(["--config", str(_config(tmp_path)), "plan", "--prd", str(prd),
+                     "--project", str(project)]) == 0
+    stored = project / ".swarmflow" / "PRD.md"
+    assert stored.read_text(encoding="utf-8") == "the prd body"
+    state = runstate.load_run(str(project.resolve()))
+    assert state["prd_sha256"] == hashlib.sha256(b"the prd body").hexdigest()
+
+
+def test_cli_plan_failure_writes_no_prd(tmp_path, monkeypatch):
+    _patch(monkeypatch, FakeBackend("nope", "still nope"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    prd = tmp_path / "prd.md"
+    prd.write_text("the prd body", encoding="utf-8")
+    assert cli.main(["--config", str(_config(tmp_path)), "plan", "--prd", str(prd),
+                     "--project", str(project)]) == 1
+    assert not (project / ".swarmflow" / "PRD.md").exists()
 
 
 class FakeRunner:

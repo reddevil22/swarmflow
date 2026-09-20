@@ -6,7 +6,9 @@ import sys
 
 import pytest
 
+from swarmflow import cli
 from swarmflow.discrimination import run_check
+from swarmflow.ledger import Ledger
 
 GIT = shutil.which("git") is not None
 pytestmark = pytest.mark.skipif(not GIT, reason="git not available")
@@ -183,6 +185,91 @@ def test_skips_without_base_sha_or_settings(tmp_path):
                      {"base_sha": base})["skipped"] == "disabled in config"
     assert run_check(str(repo), 1, _tasks(owner_files=["src/calc.py"]), _config(),
                      {"base_sha": base})["skipped"] == "no owned test-shaped files"
+
+
+TAP_RUNNER = ("import sys\n"
+              "print('TAP version 13')\n"
+              "print('not ok 1 - bounds rejects zero')\n"
+              "print('# tests 2')\n"
+              "print('# pass 1')\n"
+              "print('# fail 1')\n"
+              "sys.exit(1)\n")
+
+
+def _tap_repo(tmp_path, files):
+    """Repo at base + a TAP-printing runner standing in for the project's command."""
+    repo = _base_repo(tmp_path)
+    for rel, text in files.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    runner = tmp_path / "tap_runner.py"
+    runner.write_text(TAP_RUNNER, encoding="utf-8")
+    base = _commit(repo)
+    return repo, base, f'"{sys.executable}" "{runner}"'
+
+
+def test_path_less_failures_are_attributed_by_name(tmp_path):
+    repo, base, command = _tap_repo(tmp_path, {
+        "tests/test_tap.py": "test('bounds rejects zero', () => {});\n"})
+    tasks = [{"id": "T1", "owner_files": ["tests/test_tap.py"],
+              "test_command": command}]
+
+    result = run_check(str(repo), 1, tasks, _config(), {"base_sha": base})
+
+    entry = result["files"][0]
+    assert entry["verdict"] == "fails_at_parent"
+    assert entry["basis"] == "name_found_in_copied_file"
+    assert result["unattributable"] is False
+
+
+def test_ambiguous_test_name_is_not_attributed(tmp_path):
+    repo, base, command = _tap_repo(tmp_path, {
+        "tests/test_one.py": "test('bounds rejects zero', () => {});\n",
+        "tests/test_two.py": "test('bounds rejects zero', () => {});\n"})
+    tasks = [{"id": "T1", "owner_files": ["tests/test_one.py", "tests/test_two.py"],
+              "test_command": command}]
+
+    result = run_check(str(repo), 1, tasks, _config(), {"base_sha": base})
+
+    assert {entry["verdict"] for entry in result["files"]} == {"not_observed"}
+    assert all(entry["reason"] == "unattributable_failures" for entry in result["files"])
+    assert result["unattributable"] is True
+
+
+def test_unparseable_red_parent_never_reports_passes_at_parent(tmp_path):
+    repo, base, _ = _tap_repo(tmp_path, {"tests/test_x.py": "print('hi')\n"})
+    noise = tmp_path / "noise.py"
+    noise.write_text("import sys\nprint('something went wrong')\nsys.exit(1)\n",
+                     encoding="utf-8")
+    tasks = [{"id": "T1", "owner_files": ["tests/test_x.py"],
+              "test_command": f'"{sys.executable}" "{noise}"'}]
+
+    result = run_check(str(repo), 1, tasks, _config(), {"base_sha": base})
+
+    assert result["counts"]["passes_at_parent"] == 0
+    assert result["files"][0]["verdict"] == "not_observed"
+    assert result["files"][0]["reason"] == "unattributable_failures"
+    assert result["unattributable"] is True
+
+
+def test_unattributable_parent_is_fail_closed_under_enforce(tmp_path, monkeypatch):
+    project = tmp_path / "proj"
+    project.mkdir()
+    ledger = Ledger(str(tmp_path / "l.db"))
+    ledger.add_task("T1", str(project.resolve()), owner_files=["tests/x.test.ts"])
+    canned = {"version": 1, "wave": 1, "indeterminate": False, "unattributable": True,
+              "unattributable_files": ["tests/x.test.ts"], "counts": {}, "files": []}
+    monkeypatch.setattr("swarmflow.discrimination.run_check", lambda *a, **k: canned)
+
+    warn_state, _ = cli._run_discrimination(
+        str(project), 1, [{"id": "T1"}], {"discrimination": {"mode": "warn"}}, ledger, {})
+    enforce_state, _ = cli._run_discrimination(
+        str(project), 1, [{"id": "T1"}], {"discrimination": {"mode": "enforce"}}, ledger,
+        {})
+    ledger.close()
+    assert warn_state == "warn"
+    assert enforce_state == "fail"
 
 
 def test_leftover_worktree_is_cleaned(tmp_path):
