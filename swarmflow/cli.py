@@ -8,6 +8,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import yaml
+
 from .audit import audit, freeze, seal
 from .config import DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, REPO_ROOT, load_config
 from .frontier import FrontierError, build_backend
@@ -123,7 +125,8 @@ def cmd_trace(args, config) -> int:
     return 0
 
 
-def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
+def _brownfield_preflight(plan: dict, project_root: Path, plan_path: str,
+                          allow_dirty: bool, kill_stale: bool, config) -> int:
     """Git-required preflight: clean tree, ignore entries, recon, branch, control state."""
     from .recon import (branch_ensure, ensure_gitignore_entries, git_state,
                         recon as run_recon)
@@ -131,7 +134,7 @@ def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
     if not state.get("is_git"):
         print("brownfield mode requires a git repository; run `git init` first")
         return 2
-    if state.get("dirty_tracked") and not args.allow_dirty:
+    if state.get("dirty_tracked") and not allow_dirty:
         print("working tree has modified tracked files; commit or stash them first "
               "(or pass --allow-dirty):")
         for line in (state["dirty_tracked"] or [])[:10]:
@@ -154,7 +157,7 @@ def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
     action = branch_ensure(str(project_root), branch)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     data = runstate.load_run(str(project_root))
-    data.update({"plan_path": str(Path(args.plan).resolve()), "mode": "brownfield",
+    data.update({"plan_path": str(Path(plan_path).resolve()), "mode": "brownfield",
                  "project": str(project_root.resolve()), "branch": branch,
                  "base_sha": data.get("base_sha") or state.get("head", ""),
                  "updated_at": now})
@@ -179,7 +182,7 @@ def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
             ports = ",".join(str(port) for port in record["ports"]) or "-"
             print(f"warning: project-attributed listener already running: pid "
                   f"{record['pid']} {record['name']} (ports: {ports})")
-        if getattr(args, "kill_stale", False):
+        if kill_stale:
             killed = [record["pid"] for record in stale if kill_tree(record["pid"])]
             print(f"  --kill-stale terminated {len(killed)} process(es)")
         else:
@@ -189,28 +192,35 @@ def _brownfield_preflight(plan: dict, project_root: Path, args, config) -> int:
 
 
 def cmd_plan_load(args, config) -> int:
-    plan = load_plan(args.plan)
+    return _plan_load(args.plan, args.project, config, allow_dirty=args.allow_dirty,
+                      kill_stale=args.kill_stale, json_output=args.json)
+
+
+def _plan_load(plan_path: str, project: str | None, config, allow_dirty: bool = False,
+               kill_stale: bool = False, json_output: bool = False) -> int:
+    plan = load_plan(plan_path)
     errors = validate_plan(plan)
     if errors:
         print("PLAN INVALID:")
         for error in errors:
             print(f"  - {error}")
         return 2
-    raw_root = args.project or plan.get("project")
+    raw_root = project or plan.get("project")
     if not raw_root:
         print("no project root given (use --project or project: in the plan)")
         return 2
     project_root = Path(raw_root).resolve()
     mode = plan.get("mode", "greenfield")
     if mode == "brownfield":
-        rc = _brownfield_preflight(plan, project_root, args, config)
+        rc = _brownfield_preflight(plan, project_root, plan_path, allow_dirty,
+                                   kill_stale, config)
         if rc:
             return rc
     info = scaffold(plan, project_root, REPO_ROOT, mode=mode)
     if mode != "brownfield":
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
         data = runstate.load_run(str(project_root))
-        data.update({"plan_path": str(Path(args.plan).resolve()), "mode": mode,
+        data.update({"plan_path": str(Path(plan_path).resolve()), "mode": mode,
                      "project": str(project_root.resolve()), "updated_at": now})
         data.setdefault("created_at", now)
         override = config["regression"].get("command") or ""
@@ -224,7 +234,7 @@ def cmd_plan_load(args, config) -> int:
     ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
     counts = enqueue_plan(ledger, plan, project_root, info["spec_paths"])
     ledger.close()
-    if args.json:
+    if json_output:
         print(json.dumps({"mode": mode, "project": str(project_root),
                           "tasks": counts, "git": info["git"],
                           "spec_paths": len(info["spec_paths"])}))
@@ -232,6 +242,98 @@ def cmd_plan_load(args, config) -> int:
         print(f"[{mode}] scaffolded {project_root} (git: {info['git']}); enqueued "
               f"{counts['inserted']}/{counts['total']} tasks")
     return 0
+
+
+def cmd_plan(args, config) -> int:
+    """Frontier planning: PRD (+ recon digest) -> validated plan.yaml."""
+    from .roles import RoleError, plan_from_prd
+    prd_path = Path(args.prd)
+    if not prd_path.exists():
+        print(f"PRD not found: {prd_path}")
+        return 2
+    project_root = Path(args.project).resolve()
+    out = Path(args.out) if args.out else project_root / ".swarmflow" / "plan.yaml"
+    if out.exists() and not args.force:
+        print(f"{out} already exists (pass --force to overwrite)")
+        return 2
+    try:
+        result = plan_from_prd(config, prd_path.read_text(encoding="utf-8"),
+                               str(project_root), args.mode)
+    except RoleError as exc:
+        print(f"PLAN FAILED: {exc}")
+        return exc.code
+    except FrontierError as exc:
+        print(f"PLAN FAILED (frontier): {exc}")
+        return 2
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(yaml.safe_dump(result["plan"], sort_keys=False), encoding="utf-8")
+    if args.json:
+        print(json.dumps({"plan": str(out), "tasks": result["tasks"],
+                          "waves": result["waves"], "retried": result["retried"],
+                          "artifact": result["artifact"]}))
+    else:
+        print(f"plan written: {out} ({result['tasks']} tasks, "
+              f"waves {result['waves']}){' [retried once]' if result['retried'] else ''}")
+        print(f"raw model output: {result['artifact']}")
+    if args.load:
+        return _plan_load(str(out), str(project_root), config)
+    return 0
+
+
+def cmd_verify(args, config) -> int:
+    """Frontier verification of one task against its spec."""
+    from .roles import RoleError, verify_task
+    with Ledger(str(REPO_ROOT / config["paths"]["ledger"])) as ledger:
+        task = ledger.get(args.task)
+        if not task:
+            print(f"unknown task: {args.task}")
+            return 2
+        project_root = args.project or task["project"]
+        try:
+            result = verify_task(config, project_root, ledger, args.task)
+        except RoleError as exc:
+            print(f"VERIFY FAILED: {exc}")
+            return exc.code
+        except FrontierError as exc:
+            print(f"VERIFY FAILED (frontier): {exc}")
+            return 2
+        if args.json:
+            print(json.dumps(result))
+        else:
+            print(f"verify {result['task_id']}: {result['verdict']} -> {result['status']}")
+            for finding in result["findings"][:10]:
+                print(f"  - [{finding.get('severity')}] {finding.get('summary')}")
+            for item in result["uncovered"][:10]:
+                print(f"  uncovered: {item}")
+            print(f"  artifact: {result['artifact']}")
+        return 0 if result["verdict"] == "pass" else 1
+
+
+def cmd_accept(args, config) -> int:
+    """Frontier acceptance over the frozen criteria and the evidence bundle."""
+    from .roles import RoleError, accept_run
+    with Ledger(str(REPO_ROOT / config["paths"]["ledger"])) as ledger:
+        try:
+            result = accept_run(config, str(Path(args.project).resolve()), ledger)
+        except RoleError as exc:
+            print(f"ACCEPT FAILED: {exc}")
+            return exc.code
+        except FrontierError as exc:
+            print(f"ACCEPT FAILED (frontier): {exc}")
+            return 2
+        if args.json:
+            print(json.dumps(result))
+        else:
+            print(f"acceptance: {result['verdict']} ({len(result['criteria'])} criteria, "
+                  f"{len(result['gaps'])} gaps)")
+            for gap in result["gaps"][:10]:
+                print(f"  gap: {gap.get('criterion')} - {gap.get('why')}")
+            for risk in result["residual_risks"][:10]:
+                print(f"  risk: {risk}")
+            if result["accepted_tasks"]:
+                print(f"  accepted tasks: {', '.join(result['accepted_tasks'])}")
+            print(f"  artifact: {result['artifact']}")
+        return 0 if result["verdict"] == "accepted" else 1
 
 
 def _save_regression_baseline(project_root: str, baseline: dict) -> None:
@@ -271,6 +373,13 @@ def cmd_wave_run(args, config) -> int:
     with Ledger(str(REPO_ROOT / config["paths"]["ledger"])) as ledger:
         tasks = ledger.list_tasks(status="queued", wave=args.wave)
         if not tasks:
+            if getattr(args, "verify", False):
+                delivered = [task for task in ledger.list_tasks(wave=args.wave)
+                             if task["status"] == "delivered"]
+                if delivered:
+                    results = _run_verify_stage(delivered[0]["project"], delivered,
+                                                config, ledger, quiet=args.json)
+                    return 0 if all(item["verdict"] == "pass" for item in results) else 1
             if args.json:
                 print(json.dumps({"wave": args.wave, "results": [],
                                   "ledger": ledger.counts()}))
@@ -394,7 +503,6 @@ def cmd_wave_run(args, config) -> int:
         report["discrimination"] = disc_result
         if disc_state == "fail":
             failures += 1
-        report["ledger"] = ledger.counts()
         audit_ignores = list(config["audit"]["ignore_extra"]) \
             + list(run_state.get("audit_ignores") or [])
         audit_state, audit_result = _run_audit(project_root, ledger, tasks[0]["id"],
@@ -411,6 +519,28 @@ def cmd_wave_run(args, config) -> int:
                                       {task["id"]: task["owner_files"] for task in tasks})
             except Exception as exc:              # never break a wave on sealing
                 print(f"seal failed, baseline left unsealed: {exc}")
+        verify_results = []
+        verify_wanted = bool(getattr(args, "verify", False)) \
+            or bool((config.get("verify") or {}).get("enabled", False))
+        if verify_wanted:
+            explicit = bool(getattr(args, "verify", False))
+            if failures > 0 or audit_state == "fail":
+                if explicit:
+                    print("verify skipped: the wave's gates failed")
+            else:
+                verify_results = _run_verify_stage(project_root, tasks, config, ledger,
+                                                   quiet=args.json)
+                errors = [item for item in verify_results if item["verdict"] == "error"]
+                if errors and len(errors) == len(verify_results) \
+                        and all(item.get("code") == 2 for item in errors):
+                    if explicit:
+                        print("verify failed: frontier unavailable")
+                        return 2
+                    print("verify skipped: frontier not configured")
+                elif any(item["verdict"] != "pass" for item in verify_results):
+                    failures += 1
+        report["verify"] = verify_results
+        report["ledger"] = ledger.counts()
         if args.json:
             print(json.dumps(report))
         else:
@@ -486,6 +616,48 @@ def _run_discrimination(project_root: str, wave: int, tasks: list, config: dict,
             if entry["verdict"] in ("passes_at_parent", "deleted_in_wave", "error_at_parent"):
                 print(f"  {entry['verdict']}: {entry['path']}")
     return state, slim
+
+
+def _run_verify_stage(project_root: str, tasks: list, config: dict, ledger,
+                      quiet: bool = False) -> list:
+    """Frontier-verify this wave's delivered tasks (unique ids, capped)."""
+    from .roles import RoleError, verify_task
+    limit = int((config.get("verify") or {}).get("max_tasks", 5))
+    seen = []
+    for task in tasks:
+        if task["id"] not in seen:
+            seen.append(task["id"])
+    results = []
+    skipped = 0
+    for task_id in seen:
+        task = ledger.get(task_id)
+        if not task or task["status"] != "delivered":
+            continue
+        if len(results) >= limit:
+            skipped += 1
+            continue
+        try:
+            outcome = verify_task(config, project_root, ledger, task_id)
+        except RoleError as exc:
+            outcome = {"task_id": task_id, "verdict": "error", "error": str(exc),
+                       "code": exc.code, "findings": []}
+        except FrontierError as exc:
+            outcome = {"task_id": task_id, "verdict": "error", "error": str(exc),
+                       "code": 2, "findings": []}
+        results.append(outcome)
+        if not quiet:
+            if outcome["verdict"] == "pass":
+                print(f"  verify {task_id}: pass")
+            elif outcome["verdict"] == "error":
+                print(f"  verify {task_id}: ERROR {outcome['error']}")
+            else:
+                print(f"  verify {task_id}: {outcome['verdict']}")
+                for finding in (outcome.get("findings") or [])[:5]:
+                    print(f"    - [{finding.get('severity')}] {finding.get('summary')}")
+    if not quiet and results:
+        passed = sum(1 for item in results if item["verdict"] == "pass")
+        print(f"verified {passed} of {len(results)} ({skipped} skipped over max_tasks)")
+    return results
 
 
 def _run_sweep(project_root: str, wave: int, before: dict, after: dict, wave_start: float,
@@ -681,8 +853,35 @@ def main(argv: list[str] | None = None) -> int:
                            "(skips its comparison)")
     wave.add_argument("--strict", action="store_true",
                       help="force fail-closed regression comparison for this wave")
+    wave.add_argument("--verify", action="store_true",
+                      help="frontier-verify this wave's delivered tasks after the gates")
     wave.add_argument("--json", action="store_true")
     wave.set_defaults(func=cmd_wave_run)
+
+    plan_p = sub.add_parser("plan", help="ask the frontier planner for a plan (PRD in)")
+    plan_p.add_argument("--prd", required=True, help="path to the PRD/spec text")
+    plan_p.add_argument("--project", required=True)
+    plan_p.add_argument("--mode", default="greenfield",
+                        choices=["greenfield", "brownfield"])
+    plan_p.add_argument("--out", default=None,
+                        help="default: <project>/.swarmflow/plan.yaml")
+    plan_p.add_argument("--load", action="store_true",
+                        help="plan-load the resulting file immediately")
+    plan_p.add_argument("--force", action="store_true", help="overwrite an existing --out")
+    plan_p.add_argument("--json", action="store_true")
+    plan_p.set_defaults(func=cmd_plan)
+
+    verify_p = sub.add_parser("verify", help="frontier verification of one task")
+    verify_p.add_argument("--task", required=True)
+    verify_p.add_argument("--project", default=None,
+                          help="defaults to the task's recorded project")
+    verify_p.add_argument("--json", action="store_true")
+    verify_p.set_defaults(func=cmd_verify)
+
+    accept_p = sub.add_parser("accept", help="frontier acceptance over the evidence bundle")
+    accept_p.add_argument("--project", required=True)
+    accept_p.add_argument("--json", action="store_true")
+    accept_p.set_defaults(func=cmd_accept)
 
     status = sub.add_parser("status", help="show ledger state")
     status.add_argument("--json", action="store_true")

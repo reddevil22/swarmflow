@@ -4,7 +4,7 @@
 
 | Role | Backed by | Responsibility |
 |---|---|---|
-| Planner / Verifier / Acceptator | a configured frontier backend (`frontier.py`: `openai` / `commandcode` / `cli` / `pi`) - **operator-run today**: no `plan`/`verify`/`accept` command wires these prompts in yet | PRD decomposition, contract design, failure triage, verdicts, acceptance |
+| Planner / Verifier / Acceptator | a configured frontier backend (`frontier.py`: `openai` / `commandcode` / `cli` / `pi`), driven by `swarmflow/roles.py` | PRD decomposition, contract design, failure triage, verdicts, acceptance - invoked by `swarmflow plan` / `verify` / `accept` |
 | Worker | local Pi session -> vllm-79/qwen36 | implement one pinned task (module + tests + report) |
 | Control plane | `swarmflow` Python package | deterministic state machine: queue, dispatch, admission control, retries, artifact audits |
 | Human | run-branch review | the only human checkpoint for now: review the branch (no PR automation) |
@@ -12,12 +12,18 @@
 ## Task state machine
 
 ```
-queued -> running -> delivered -> verified -> integrated -> accepted
+queued -> running -> delivered -> verified -> accepted
              |            |            |
              v            v            v
-          failed       needs_fix    escalated        (awaiting_pr_review between verified and integrated
-                                                      when a review gate is configured)
+          failed       needs_fix     escalated
 ```
+
+`delivered -> verified | needs_fix` is written by `swarmflow verify --task <id>` (or the
+`wave-run --verify` stage) from the frontier verdict; `verified -> accepted` is written
+by `swarmflow accept --project <path>`. `integrated` and `awaiting_pr_review` have no
+producer yet (PR automation is out of scope); `needs_fix` and `verified` tasks are not
+dispatched by `wave-run` (it only picks `queued`) - they are recovered by a **fresh plan
+that produces new task ids** (or an explicit operator decision).
 
 Statuses live in a SQLite ledger (`swarmflow/ledger.py`): `tasks` table + append-only
 `events` table. Every transition is an event; the ledger is the single source of truth.

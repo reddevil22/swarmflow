@@ -105,5 +105,12 @@ sweep:
   ignore_names: []        # extra process names to never report or kill
   server_names: ["node", "vite", "ts-node", "npm", "npx", "webpack", "next"]
 
+verify:
+  # Frontier verification (prompts/verifier.md) of a wave's delivered tasks, run after
+  # the gates. Off by default so frontier spend is explicit; `wave-run --verify` forces
+  # it for one wave. Verdicts move tasks to verified / needs_fix.
+  enabled: false
+  max_tasks: 5            # cap per wave; the rest are reported as skipped
+
 git:
   branch_prefix: "swarmflow/"   # brownfield run branches are <prefix><project_name>

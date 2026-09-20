@@ -7,6 +7,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- **Frontier roles wired** (`swarmflow/roles.py` + three commands):
+  - `swarmflow plan --prd F --project P [--mode brownfield] [--out] [--load]` runs the
+    planner, validates the JSON (one retry with the validation errors as feedback),
+    injects `project`/`mode`, and writes `<project>/.swarmflow/plan.yaml`.
+  - `swarmflow verify --task T` (and the opt-in `wave-run --verify` stage, config
+    `verify.enabled` / `verify.max_tasks`, off by default) runs the verifier against the
+    spec, the worker report and the latest gate artifacts; `pass` -> `verified`,
+    `fail|needs_fix` -> `needs_fix` (the worker's `verdict` column is never touched).
+  - `swarmflow accept --project P` runs acceptance over the frozen criteria and the
+    evidence bundle; `accepted` moves that project's `verified` tasks to `accepted`.
+  - every call writes its raw output + parsed result to
+    `.swarmflow/evidence/{plan,verify_<id>,accept}.json`; shared exit codes `0`/`1`/`2`
+    (positive / model-negative-or-unusable / infrastructure); worker- and tool-produced
+    blocks are fenced as `<untrusted>` with the anti-injection note outside the fence.
 - **Sticky frozen baseline** (`audit.freeze(carry_over=True)` + `audit.seal`): the
   per-wave freeze no longer re-hashes files the wave does not own - it carries the
   previous baseline's hashes (including entries for deleted files), so a `modified_frozen`

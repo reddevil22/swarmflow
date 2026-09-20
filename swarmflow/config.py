@@ -78,6 +78,10 @@ DEFAULTS = {
         "ignore_names": [],
         "server_names": ["node", "vite", "ts-node", "npm", "npx", "webpack", "next"],
     },
+    "verify": {
+        "enabled": False,       # frontier verification of a wave's delivered tasks
+        "max_tasks": 5,         # per wave (wave-run --verify forces the stage for one wave)
+    },
     "git": {
         "branch_prefix": "swarmflow/",
     },

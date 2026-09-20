@@ -22,15 +22,24 @@ single source of truth; every claim is verified by artifacts, never by exit code
 pip install -e ".[dev]"          # runtime deps: pyyaml + psutil; pytest for development
 swarmflow init                   # writes config/swarmflow.yaml from the example
 $EDITOR config/swarmflow.yaml    # set your worker model id and CLI paths
+swarmflow plan --prd PRD.md --project <path> --load   # frontier planner -> plan.yaml
 swarmflow smoke-frontier         # configured frontier backend reachability
 swarmflow smoke-worker           # local worker reachability (Pi + model server)
 swarmflow plan-load --plan examples/smoke-plan.yaml --project <path>
 swarmflow freeze --project <path>
 swarmflow wave-run --wave 1
 swarmflow audit --project <path> --json
+swarmflow verify --task <id>     # frontier verification of one delivered task
+swarmflow accept --project <path>  # frontier acceptance over the evidence bundle
 swarmflow status --json                # ledger state
 swarmflow trace logs/<task>_a1.jsonl   # session-trace analysis (always JSON)
 ```
+
+Frontier-role exit codes (shared by `plan`/`verify`/`accept`): `0` positive verdict,
+`1` the model responded but the result is unusable or negative (invalid plan,
+`needs_fix`, `rejected`), `2` infrastructure (no backend configured, transport error,
+nothing to verify/accept). Each call writes its raw output to
+`<project>/.swarmflow/evidence/{plan,verify_<id>,accept}.json`.
 
 Brownfield (existing repositories):
 ```bash
@@ -63,11 +72,10 @@ thinking. See the case study for what each one caught.
 
 ## Status
 Alpha. The deterministic pipeline is implemented and was validated end-to-end on a 5-task
-NestJS project (48 unit + 11 e2e tests, external HTTP probe 13/13). Frontier access
-(planning, verification, acceptance) is backend-agnostic but **operator-run today**: the
-prompt templates in `prompts/` are pasted into the configured backend by hand - no
-`plan`/`verify`/`accept` commands wire them in yet. PR automation is intentionally out
-of scope for now.
+NestJS project (48 unit + 11 e2e tests, external HTTP probe 13/13). Frontier roles are
+wired: `swarmflow plan` (PRD -> validated plan), `swarmflow verify` / `wave-run --verify`
+(delivered -> verified/needs_fix) and `swarmflow accept` (verified -> accepted). PR
+automation and packaged-artifact delivery are intentionally out of scope for now.
 
 ## License
 MIT - see [LICENSE](LICENSE).

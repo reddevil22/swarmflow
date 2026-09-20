@@ -5,6 +5,10 @@ Input: PRD/spec text. Output: `requirements.md` (normalized, numbered), MVP-1 sc
 non-goals, acceptance criteria. Scope is frozen at the end of this stage.
 
 ## Stage 1 - Plan (frontier)
+`swarmflow plan --prd <file> --project <path> [--mode brownfield] [--load]` invokes
+`prompts/planner.md`, validates the result (one retry with the validation errors as
+feedback), injects `project`/`mode` from the CLI, and writes
+`<project>/.swarmflow/plan.yaml` (raw model output in `evidence/plan.json`).
 Output: `plan.yaml` containing
 - work packages with **disjoint file ownership** (one module or feature per package)
 - frozen interface contracts (signatures, schemas, CLI surface)
@@ -36,8 +40,11 @@ Per wave boundary:
    the wave, `warn` records evidence)
 3. requirement->test traceability matrix parsed from worker reports (roadmap - not
    implemented yet)
-4. verifier pass (frontier) over specs vs. delivered artifacts; findings become fix tasks
-   (**operator-run today**: `prompts/verifier.md` has no CLI command wiring it in yet)
+4. verifier pass (frontier): `swarmflow verify --task <id>` per task, or the
+   `wave-run --verify` stage over a wave's delivered tasks (`verify.enabled` in config,
+   capped by `verify.max_tasks`). A `pass` moves the task to `verified`; `fail`/`needs_fix`
+   moves it to `needs_fix` and the findings are printed + stored in `evidence/verify_<id>.json`.
+   Recovery is a **fresh plan producing new task ids** - `wave-run` only dispatches `queued`.
 5. new tasks (fixes/retries) are appended to the current or next wave
 
 ## Stage 5 - Integrate
@@ -54,8 +61,10 @@ Per wave boundary:
 ## Stage 7 - Package (deployable artifact) - roadmap, not implemented
 - planned: build the artifact (wheel/binary/container per project type), run the
   packaged artifact's smoke test, attach build outputs + checksums to the evidence bundle
-- planned: acceptance (frontier) maps every frozen acceptance criterion to evidence;
-  gaps become the MVP-2 backlog. Today `prompts/acceptance.md` is operator-run.
+- acceptance is wired: `swarmflow accept --project <path>` maps the frozen acceptance
+  criteria to evidence via `prompts/acceptance.md` + `evidence/bundle.md`; an `accepted`
+  verdict moves every `verified` task to `accepted`, `rejected` prints the gaps. The
+  packaged-artifact part remains roadmap.
 
 ## Brownfield runs (existing repositories)
 
