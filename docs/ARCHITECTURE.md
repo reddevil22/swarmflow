@@ -52,6 +52,7 @@ Measured behavior this design relies on (stress test, 2026-09-19):
 | worker rewrites gate state (`recon.json`, `run.json`, project `frozen.json`) | gate inputs live in `REPO_ROOT/state/runs/<hash-of-project>/`; the regression command is frozen at plan-load and never re-derived from the project | audit outcome unchanged; the project-side `run.json` is only a marked mirror |
 | frozen file modified between waves (laundering) | the per-wave freeze carries unowned hashes instead of re-hashing them; the wave that owns a file seals its post-wave content (`audit.seal`) | the finding stays red until an explicit `swarmflow freeze` re-baseline |
 | tests pass but do not discriminate (accommodating tests) | discrimination check: the wave's owned test files re-run at the run's base commit in a throwaway git worktree | verdicts in the ledger + evidence bundle; `discrimination.mode: enforce` fails the wave |
+| wave creates a file and nobody commits it | `audit.seal` adds owned, untracked, non-ignored, non-exempt files to the baseline (cap 200/wave) and drops them from the owner map | the next wave neither flags it as `added_unowned` nor silently trusts edits (`modified_frozen` / `deleted_frozen`); overflow past the cap keeps violating |
 | pre-existing untracked file flagged after the run starts | the preflight snapshots the run's untracked files (file-level, `git status -uall`) into `untracked_baseline`; the audit exempts them by exact path | only files created after the preflight violate |
 | editable-install Python sources shadowing the parent worktree | worktree source roots prepended to PYTHONPATH for parent-state runs; a `find_spec` probe verifies every project package resolves inside the worktree | `indeterminate` (fail-closed under `enforce`) when an import escapes - e.g. a `meta_path`-finder editable install that bypasses sys.path |
 | path-blind runner output (TAP / node:test names, self-skipped families) | observability is computed per run (do its failures name files?); failure names are matched against the copied test files (unique quoted-literal match) | `fails_at_parent` when a name is found, otherwise `not_observed` - never a false `passes_at_parent` |
@@ -70,7 +71,11 @@ wave, scoping an integration task's ownership of shared files to its own wave - 
 freeze **carries** the previous baseline's hashes for files the wave does not own, so an
 edit made between waves stays visible until an explicit `swarmflow freeze` re-baseline.
 The wave that owns a file seals its post-wave content (`audit.seal`), which is the only
-moment an owned change becomes the new baseline.
+moment an owned change becomes the new baseline; a file the wave *created* (untracked,
+not ignored, not already exempt) is added to the baseline by the same seal (cap 200 per
+wave) and leaves the owner map, so the next wave protects it by hash instead of flagging
+it as `added_unowned`. A rename across waves reports the old path as `deleted_frozen` and
+the new one as `added_unowned`.
 
 Exit codes are never trusted as success signals (observed rc=0 with an empty deliverable).
 

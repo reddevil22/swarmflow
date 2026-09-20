@@ -90,10 +90,13 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    untracked files are snapshotted (file-level) into the run and exempted from the scope
    audit - only files created after the preflight can violate it.
 4. **Waves**: before each wave, freeze only that wave's owner map (per-wave ownership).
-   The freeze **carries** the previous baseline's hashes for files the wave does not own
-   (an edit made between waves stays visible; only an owning wave re-reads a file, and
-   its post-wave content is sealed right after the audit). A deliberate re-baseline is
-   `swarmflow freeze --project P` (mode inferred from the run; it prints the counts).
+   The freeze **carries** the previous baseline's hashes for files the wave does not own,
+   so an edit made between waves stays visible; only an owning wave re-reads a file, and
+   its post-wave content is sealed right after the audit. A file the wave *created* is
+   added to the baseline by that seal (capped per wave) and leaves the owner map, so the
+   next wave protects it by hash instead of flagging it as a new file. A deliberate
+   re-baseline is `swarmflow freeze --project P` (mode inferred from the run; it prints
+   the counts and keeps previously sealed entries).
    After each wave: the process sweep diffs process snapshots taken before/after the
    wave, attributes new processes to the project (command line or working directory),
    attaches listening ports and reports them (`evidence/wave<N>.sweep.json`;

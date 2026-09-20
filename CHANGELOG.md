@@ -43,6 +43,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   narrative, and planner-level spec defects were invisible by construction.
 
 ### Added
+- **Wave-created files are sealed into the frozen baseline** (`audit.seal`): an owned,
+  untracked, non-ignored file a wave creates (and that the preflight did not already
+  exempt) is added to the baseline with its post-wave hash, capped at
+  `MAX_SEAL_ADDITIONS` (200) per wave with the overflow reported as `capped` and printed.
+  Ownership is wave-scoped, so sealed paths leave the baseline's owner map immediately -
+  the next wave neither flags the file as `added_unowned` nor silently trusts edits to it
+  (`modified_frozen` / `deleted_frozen`). The manual `swarmflow freeze` re-baseline keeps
+  previously sealed entries whose files still exist without absorbing strays, and never
+  unions a greenfield baseline. A `seal` ledger event records the counts.
 - **Frontier roles wired** (`swarmflow/roles.py` + three commands):
   - `swarmflow plan --prd F --project P [--mode brownfield] [--out] [--load]` runs the
     planner, validates the JSON (one retry with the validation errors as feedback),

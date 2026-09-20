@@ -700,6 +700,79 @@ def test_new_untracked_file_during_the_wave_still_fails(tmp_path, monkeypatch):
     assert any("stray.txt" in event["detail"] for event in events)
 
 
+def _writing_runner(repo, content):
+    """Runner that writes an owned file during the wave (simulates a worker)."""
+
+    class WritingRunner:
+        def __init__(self, ledger):
+            self.ledger = ledger
+
+        def run_wave(self, wave, concurrency=None):
+            (repo / "feature.py").write_text(content, encoding="utf-8")
+            results = []
+            for task in self.ledger.list_tasks(status="queued", wave=wave):
+                self.ledger.set_status(task["id"], "delivered")
+                results.append({"task_id": task["id"], "outcome": "delivered",
+                                "missing": [], "scan": {"turns": 1, "out_tokens": 10},
+                                "server_launches": []})
+            return results
+
+    return WritingRunner
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_wave_created_files_are_sealed_for_the_next_wave(tmp_path, monkeypatch):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    config = _config(tmp_path)
+    plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
+            "tasks": [{"id": "T1", "module": "feature.py",
+                       "owner_files": ["feature.py"], "spec": "do", "wave": 1}]}
+    plan_path = tmp_path / "plan.yaml"
+    plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
+
+    runner = _writing_runner(repo, "created by the wave\n")
+    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: runner(ledger))
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+    assert "feature.py" in runstate.load_frozen(str(repo.resolve()))["files"]
+
+    # wave 2 with an unrelated task: without sealing this fails as added_unowned
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    ledger.add_task("T2", str(repo), wave=2, owner_files=["other.py"])
+    ledger.close()
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "2"]) == 0
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_unowned_edit_of_a_sealed_file_fails_the_next_wave(tmp_path, monkeypatch):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    config = _config(tmp_path)
+    plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
+            "tasks": [{"id": "T1", "module": "feature.py",
+                       "owner_files": ["feature.py"], "spec": "do", "wave": 1}]}
+    plan_path = tmp_path / "plan.yaml"
+    plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
+
+    creator = _writing_runner(repo, "created by the wave\n")
+    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: creator(ledger))
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+
+    tamperer = _writing_runner(repo, "tampered by an unowned task\n")
+    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: tamperer(ledger))
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    ledger.add_task("T2", str(repo), wave=2, owner_files=["other.py"])
+    ledger.close()
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "2"]) == 1
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    events = [event for event in ledger.events("T2", limit=30)
+              if event["kind"] == "scope-violation"]
+    ledger.close()
+    assert any("modified_frozen" in event["detail"] and "feature.py" in event["detail"]
+               for event in events)
+
+
 @pytest.mark.skipif(not GIT, reason="git not available")
 def test_brownfield_wave_aborts_without_node_modules(tmp_path):
     repo = tmp_path / "repo"

@@ -529,8 +529,21 @@ def cmd_wave_run(args, config) -> int:
                                 "refreshed": freeze_info["refreshed"]}
         if brownfield:
             try:
-                report["seal"] = seal(project_root,
-                                      {task["id"]: task["owner_files"] for task in tasks})
+                seal_result = seal(project_root,
+                                   {task["id"]: task["owner_files"] for task in tasks})
+                report["seal"] = seal_result
+                ledger.record_event(tasks[0]["id"], "seal",
+                                    json.dumps(seal_result)[:500])
+                if not args.json and any(seal_result.get(key)
+                                         for key in ("added", "sealed", "dropped",
+                                                     "capped")):
+                    detail = (f"seal: {seal_result['added']} new file(s) baselined, "
+                              f"{seal_result['sealed']} refreshed, "
+                              f"{seal_result['dropped']} dropped")
+                    if seal_result.get("capped"):
+                        detail += (f", {seal_result['capped']} over the cap "
+                                      "(left unprotected)")
+                    print(detail)
             except Exception as exc:              # never break a wave on sealing
                 print(f"seal failed, baseline left unsealed: {exc}")
         verify_results = []
@@ -804,8 +817,9 @@ def cmd_freeze(args, config) -> int:
     else:
         print(f"frozen {info['frozen_files']} baseline entries "
               f"({info['owned']} owned paths) -> {info['baseline']}")
-        print("re-balanced every tracked file (carried=0): this clears any pending "
-              "modified/deleted_frozen findings for this project")
+        print("re-balanced every tracked file (carried=0) and kept previously sealed "
+              "entries whose files still exist; strays are not absorbed - this clears "
+              "any pending modified/deleted_frozen findings for this project")
     return 0
 
 

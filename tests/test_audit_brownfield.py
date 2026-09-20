@@ -136,7 +136,7 @@ def test_seal_bakes_owned_changes_and_stays_detectable_afterwards(tmp_path):
     (repo / "manifest.json").write_text('{"x": 1}\n', encoding="utf-8")
     assert audit(str(repo))["ok"] is True          # owned: skipped by the audit
     sealed = seal(str(repo), {"W1": ["manifest.json"]})
-    assert sealed == {"sealed": 1, "dropped": 0}
+    assert sealed == {"sealed": 1, "dropped": 0, "added": 0, "capped": 0}
 
     freeze(str(repo), {"W2": ["other.py"]}, mode="brownfield", carry_over=True)
     assert audit(str(repo))["ok"] is True          # sealed content is the baseline
@@ -211,3 +211,140 @@ def test_untracked_baseline_reads_runstate_and_matches_literally(tmp_path):
     (repo / "notes1.md").write_text("a glob would have matched this", encoding="utf-8")
     kinds = {violation["path"] for violation in audit(str(repo))["violations"]}
     assert kinds == {"notes1.md"}
+
+
+def _sealed_feature(tmp_path, content="created by the wave\n"):
+    """Repo whose W1 created an untracked owned file that seal promotes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    _commit_all(repo, "base")
+    freeze(str(repo), {"W1": ["feature.py"]}, mode="brownfield")
+    (repo / "feature.py").write_text(content, encoding="utf-8")
+    return repo
+
+
+def test_seal_adds_wave_created_files_to_the_baseline(tmp_path):
+    repo = _sealed_feature(tmp_path)
+    info = seal(str(repo), {"W1": ["feature.py"]})
+    assert info == {"sealed": 0, "dropped": 0, "added": 1, "capped": 0}
+    assert "feature.py" in runstate.load_frozen(str(repo))["files"]
+
+    # wave 2, different owners, no exemption: clean instead of added_unowned
+    assert audit(str(repo), untracked_baseline=[])["ok"] is True
+
+
+def test_sealed_files_are_hash_protected_immediately(tmp_path):
+    repo = _sealed_feature(tmp_path, content="v1\n")
+    seal(str(repo), {"W1": ["feature.py"]})
+
+    (repo / "feature.py").write_text("v2\n", encoding="utf-8")
+    kinds = {(v["kind"], v["path"]) for v in audit(str(repo))["violations"]}
+    assert ("modified_frozen", "feature.py") in kinds     # the owner map was popped
+
+    (repo / "feature.py").unlink()
+    kinds = {(v["kind"], v["path"]) for v in audit(str(repo))["violations"]}
+    assert ("deleted_frozen", "feature.py") in kinds
+
+
+def test_seal_does_not_absorb_ignored_unowned_or_exempt_files(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / ".gitignore").write_text("dist/\n", encoding="utf-8")
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    _commit_all(repo, "base")
+    runstate.save_run(str(repo), {"untracked_baseline": ["notes.md"]})
+    freeze(str(repo), {"W1": ["dist/out.js", "notes.md", "feature.py"]},
+           mode="brownfield")
+    (repo / "dist").mkdir()
+    (repo / "dist" / "out.js").write_text("ignored", encoding="utf-8")
+    (repo / "notes.md").write_text("operator note", encoding="utf-8")
+    (repo / "feature.py").write_text("owned new file", encoding="utf-8")
+    (repo / "stray.txt").write_text("unowned", encoding="utf-8")
+
+    info = seal(str(repo), {"W1": ["dist/out.js", "notes.md", "feature.py"]})
+    assert info["added"] == 1                      # only feature.py
+    files = runstate.load_frozen(str(repo))["files"]
+    assert "feature.py" in files
+    assert "dist/out.js" not in files
+    assert "notes.md" not in files
+    assert "stray.txt" not in files
+
+
+def test_carry_over_refreshes_and_carries_sealed_entries(tmp_path):
+    repo = _sealed_feature(tmp_path, content="v1\n")
+    seal(str(repo), {"W1": ["feature.py"]})
+
+    refreshed = freeze(str(repo), {"W2": ["feature.py"]}, mode="brownfield",
+                       carry_over=True)
+    assert refreshed["refreshed"] >= 1             # owned now: re-read
+    carried = freeze(str(repo), {}, mode="brownfield", carry_over=True)
+    assert carried["carried"] >= 1                 # unowned now: carried
+
+    (repo / "feature.py").unlink()
+    freeze(str(repo), {}, mode="brownfield", carry_over=True)
+    kinds = {(v["kind"], v["path"]) for v in audit(str(repo))["violations"]}
+    assert ("deleted_frozen", "feature.py") in kinds
+
+
+def test_manual_freeze_keeps_sealed_entries_but_not_strays(tmp_path):
+    repo = _sealed_feature(tmp_path, content="v1\n")
+    seal(str(repo), {"W1": ["feature.py"]})
+    (repo / "stray.txt").write_text("stray", encoding="utf-8")
+
+    freeze(str(repo), {}, mode="brownfield")       # the manual re-baseline path
+
+    files = runstate.load_frozen(str(repo))["files"]
+    assert "feature.py" in files
+    assert "stray.txt" not in files
+    kinds = {(v["kind"], v["path"]) for v in audit(str(repo))["violations"]}
+    assert ("added_unowned", "stray.txt") in kinds
+
+
+def test_full_bake_ignores_a_greenfield_previous_baseline(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    _commit_all(repo, "base")
+    runstate.save_frozen(str(repo), {"mode": "greenfield",
+                                     "files": {"ghost.py": "deadbeef"},
+                                     "ignores": [], "owners": {}})
+
+    freeze(str(repo), {}, mode="brownfield")
+
+    files = runstate.load_frozen(str(repo))["files"]
+    assert "ghost.py" not in files                 # a walk snapshot is never unioned
+    assert "tracked.py" in files
+
+
+def test_seal_cap_leaves_the_overflow_unprotected(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    _commit_all(repo, "base")
+    owned = ["a.py", "b.py", "c.py"]
+    freeze(str(repo), {"W1": owned}, mode="brownfield")
+    for rel in owned:
+        (repo / rel).write_text(f"{rel} content\n", encoding="utf-8")
+
+    info = seal(str(repo), {"W1": owned}, cap=2)
+    assert info["added"] == 2
+    assert info["capped"] == 1
+
+    kinds = {(v["kind"], v["path"]) for v in audit(str(repo))["violations"]}
+    assert ("added_unowned", "c.py") in kinds      # the overflow keeps violating
+
+
+def test_rename_of_a_sealed_file_double_reports(tmp_path):
+    repo = _sealed_feature(tmp_path, content="v1\n")
+    seal(str(repo), {"W1": ["feature.py"]})
+
+    (repo / "feature.py").rename(repo / "renamed.py")
+
+    kinds = {(v["kind"], v["path"]) for v in audit(str(repo))["violations"]}
+    assert ("deleted_frozen", "feature.py") in kinds
+    assert ("added_unowned", "renamed.py") in kinds
