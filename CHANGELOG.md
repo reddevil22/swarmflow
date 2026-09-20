@@ -7,6 +7,28 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Fixed
+- **Fix cycles can close**: `swarmflow retry --task <id>` re-queues a `needs_fix`/`failed`
+  task (refused after 3 attempts) and the next dispatch injects the verifier's findings
+  into the brief as a fenced `FIX CONTEXT` block (attempt >= 2 only; the findings quote
+  worker-authored evidence, so they enter as data). Without findings the previous outcome
+  is stated instead (`no_changes` now tells the worker its delivery is hashed). `verify`
+  additionally accepts a `failed` task whose outcome is `no_changes`, so a correct
+  implementation with weak assertions can be judged instead of re-run. Found by the
+  greenfield stability run, where a `needs_fix` task was re-dispatched with the same spec
+  and correctly answered "no changes needed" - which the harness could only record as
+  `failed`.
+- **Verifier test-count false positives**: `prompts/verifier.md` now states that
+  `tests_ran`/`failures` are scoped to the whole command in
+  `regression.baseline.command` and that parametrized tests expand into cases, and the
+  gate summary carries the same scope as `_counts_scope` data (a suite-wide 36 vs a
+  file's 14 collected cases was reported as a critical discrepancy).
+- **Acceptance sees the evidence, not a truncated report**: the bundle now leads with the
+  objective sections (`## Per-task verification` - verdicts + finding summaries - then
+  audit, regression, discrimination, sweep, diff) and renders worker reports last, bounded
+  head+tail with an explicit omission marker (`clip`), so a cut narrative can no longer
+  hide a task's results; the acceptance bundle section gets a 30000-char budget instead of
+  6000, and its prompt no longer promises a demo transcript. `scan_trace` keeps 12000
+  chars of the final report (was 4000, which already deleted every report head).
 - **Pre-existing untracked files no longer fail the audit**: the brownfield preflight
   snapshots the run's untracked files (file-level, `git status -uall`, capped) into the
   run state and the audit exempts them by exact path - only files created after the

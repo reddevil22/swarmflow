@@ -33,6 +33,11 @@ tests. Respond with ONLY a JSON object.
    smoke command whose output can be checked, over trusting the implementation.
 4. Missing self-checks are findings: a deliverable with no verification evidence cannot pass.
 5. Be concrete: cite files/tests; never hand-wave. If unsure, say so in `evidence`.
+6. Test counts are scoped: `tests_ran`/`failures` in the gate material describe the whole
+   command in `regression.baseline.command`, which may be the task's own `test_command`.
+   Table-driven/parametrized tests expand into separate cases, so a file's function count
+   is not its case count. Only report a count discrepancy when both numbers are scoped the
+   same way, and state both scopes in `evidence`.
 
 ## Brownfield rules (when a recon digest is included)
 - Flag unrequested behavior changes, new dependencies, weakened or deleted tests, and

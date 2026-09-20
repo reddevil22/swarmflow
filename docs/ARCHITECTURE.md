@@ -22,8 +22,10 @@ queued -> running -> delivered -> verified -> accepted
 `wave-run --verify` stage) from the frontier verdict; `verified -> accepted` is written
 by `swarmflow accept --project <path>`. `integrated` and `awaiting_pr_review` have no
 producer yet (PR automation is out of scope); `needs_fix` and `verified` tasks are not
-dispatched by `wave-run` (it only picks `queued`) - they are recovered by a **fresh plan
-that produces new task ids** (or an explicit operator decision).
+dispatched by `wave-run` (it only picks `queued`) - `swarmflow retry --task <id>`
+re-queues a `needs_fix`/`failed` task (attempt cap 3) and the next dispatch injects the
+verifier's findings into the brief as a fenced FIX CONTEXT block. A **fresh plan producing
+new task ids** remains the path for scope changes.
 
 Statuses live in a SQLite ledger (`swarmflow/ledger.py`): `tasks` table + append-only
 `events` table. Every transition is an event; the ledger is the single source of truth.
@@ -46,7 +48,7 @@ Measured behavior this design relies on (stress test, 2026-09-19):
 |---|---|---|
 | reasoning spiral into output cap | trace: output tokens >= 0.9*cap and empty final text, or no `agent_end` | retry same spec with thinking `medium` (proven recovery) |
 | timeout / stall | process timeout (config `worker_timeout_s`) | kill, mark failed, requeue once |
-| tests pass but requirements unmet | verifier stage (roadmap) + acceptance scripts | targeted fix task referencing the finding |
+| tests pass but requirements unmet | verifier stage (`swarmflow verify`, frontier) | task moves to `needs_fix`; findings land in `evidence/verify_<id>.json`, `swarmflow retry --task` re-queues with them injected into the brief |
 | silent cross-cutting regression | MUST-KEEP-WORKING contract suite run per wave | reject delivery, fix task |
 | regression introduced at a wave boundary | regression gate re-runs the project suite after every wave and diffs failing-test fingerprints (baseline in the control-plane state store) | wave marked failed, ledger event, compare file, fix task |
 | worker rewrites gate state (`recon.json`, `run.json`, project `frozen.json`) | gate inputs live in `REPO_ROOT/state/runs/<hash-of-project>/`; the regression command is frozen at plan-load and never re-derived from the project | audit outcome unchanged; the project-side `run.json` is only a marked mirror |

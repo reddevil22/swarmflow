@@ -10,7 +10,7 @@ FILES YOU OWN (create/edit only these):
 
 STUDY FIRST (existing files relevant to this task; read before editing):
 {files_to_read}
-
+{fix_context}
 SPECIFICATION:
 {spec}
 

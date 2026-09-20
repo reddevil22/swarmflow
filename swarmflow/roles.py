@@ -13,11 +13,11 @@ from pathlib import Path
 from . import runstate
 from .audit import audit
 from .config import REPO_ROOT
-from .evidence import bundle
+from .evidence import bundle, clip
 from .frontier import build_backend
 from .plan import validate_plan
 from .recon import digest as recon_digest, load_recon
-from .workers import scan_trace
+from .workers import scan_trace, worker_outcome
 
 MAX_BLOCK = 6000
 FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*$", re.MULTILINE)
@@ -134,6 +134,12 @@ def _gate_summary(project_root: str, ignores: list | None = None) -> str:
         summary["audit"] = audit(project_root,
                                  ignores=(state.get("audit_ignores") or [])
                                  + list(ignores or []))
+        command = ((state.get("regression") or {}).get("baseline") or {}).get("command") or ""
+        summary["_counts_scope"] = (
+            "tests_ran/failures cover the whole regression command"
+            + (f" `{command}`" if command else "")
+            + "; parametrized/table-driven tests expand into separate cases, so a file's "
+              "function count is not its case count")
     except Exception as exc:                      # never block a verify on the summary
         summary["audit"] = {"error": str(exc)}
     return json.dumps(summary, indent=2)
@@ -213,7 +219,11 @@ def verify_task(config, project_root: str, ledger, task_id: str) -> dict:
     task = ledger.get(task_id)
     if not task:
         raise RoleError(f"unknown task: {task_id}", 2)
-    if task["status"] not in ("delivered", "verified", "needs_fix"):
+    # a correct-but-unchanged delivery (no_changes) may be judged: without this, a task
+    # whose implementation was right but whose test assertions were weak can never be
+    # re-verified, and acceptance has to work around the failed label
+    rescue = task["status"] == "failed" and worker_outcome(task) == "no_changes"
+    if task["status"] not in ("delivered", "verified", "needs_fix") and not rescue:
         raise RoleError(f"task {task_id} is {task['status']}; only delivered, verified "
                         f"or needs_fix tasks can be verified", 2)
     root = str(Path(project_root).resolve())
@@ -236,7 +246,7 @@ def verify_task(config, project_root: str, ledger, task_id: str) -> dict:
     sections += [
         ("Task", task_brief, True),
         ("Spec (frozen, authoritative)", spec_text or "(no spec file)", True),
-        ("Worker report", report, False),
+        ("Worker report", clip(report, 2000, 3500), False),
         ("Owned files", "\n".join(owned) or "(none present)", False),
         ("Owned file contents (worker-authored)", _file_block(root, owned), False, 6000),
         ("Latest gate results", _gate_summary(root, (config.get("audit") or {}).get("ignore_extra")), False),
@@ -279,7 +289,7 @@ def accept_run(config, project_root: str, ledger) -> dict:
         if spec_path.exists() else "(no SPEC.md; judge against the task acceptance lists)"
     prompt = _compose("acceptance.md", [
         ("Acceptance criteria (frozen)", criteria, True),
-        ("Evidence bundle", bundle(root, ledger), False),
+        ("Evidence bundle", bundle(root, ledger), False, 30000),
     ])
     result = _call(config, prompt)
     payload = {"backend": result.get("backend"), "usage": result.get("usage"),

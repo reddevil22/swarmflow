@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from swarmflow.evidence import bundle, write_bundle
+from swarmflow.evidence import bundle, clip, write_bundle
 from swarmflow.ledger import Ledger
 from swarmflow import runstate
 
@@ -19,6 +19,56 @@ def _git_available():
 
 
 GIT = _git_available()
+
+
+def test_clip_keeps_head_and_tail_with_a_marker():
+    text = "HEAD" + ("x" * 9000) + "TAIL"
+    clipped = clip(text, head=10, tail=10)
+    assert clipped.startswith("HEAD") and clipped.endswith("TAIL")
+    assert "chars omitted" in clipped
+    assert clip("short", head=10, tail=10) == "short"
+
+
+def test_bundle_puts_verification_before_the_narratives(tmp_path):
+    project = tmp_path / "p"
+    project.mkdir()
+    ledger = Ledger(str(tmp_path / "l.db"))
+    ledger.add_task("T1", str(project), wave=1, owner_files=["a.py"], acceptance=["x"])
+    trace = project / ".swarmflow" / "T1_a1.jsonl"
+    trace.parent.mkdir(parents=True, exist_ok=True)
+    trace.write_text(json.dumps({"type": "message_end", "message": {
+        "role": "assistant",
+        "content": [{"type": "text",
+                     "text": "CHANGES-MARKER" + ("x" * 11000) + "VERIFICATION-MARKER"}],
+        "usage": {"output": 5}}}) + "\n", encoding="utf-8")
+    ledger.set_status("T1", "delivered", worker_trace=str(trace), verdict="{}")
+    evidence = project / ".swarmflow" / "evidence"
+    evidence.mkdir()
+    (evidence / "verify_T1.json").write_text(json.dumps({
+        "ok": True, "verdict": {"task_id": "T1", "verdict": "needs_fix", "findings": [
+            {"severity": "major", "summary": "only presence asserted", "evidence": "",
+             "required_action": "assert equality"}], "requirement_coverage": [],
+            "uncovered": []}}), encoding="utf-8")
+
+    text = bundle(str(project), ledger)
+    ledger.close()
+
+    assert "## Per-task verification" in text
+    assert "T1: needs_fix - 1 finding(s)" in text
+    assert "[major] only presence asserted" in text
+    assert "## Per-task verification" in text.split("## Worker reports")[0]
+    assert "CHANGES-MARKER" in text and "VERIFICATION-MARKER" in text
+    assert "chars omitted" in text
+
+
+def test_bundle_marks_unverified_tasks(tmp_path):
+    project = tmp_path / "p"
+    project.mkdir()
+    ledger = Ledger(str(tmp_path / "l.db"))
+    ledger.add_task("T9", str(project), wave=1, owner_files=["a.py"])
+    text = bundle(str(project), ledger)
+    ledger.close()
+    assert "T9: (not verified)" in text
 
 
 def test_corrupt_baseline_does_not_crash_the_bundle(tmp_path):
@@ -146,6 +196,7 @@ def test_bundle_contains_all_sections(tmp_path):
 
     markers = ["# Evidence bundle", "## Recon digest", "## Tasks", "T1",
                "acceptance: the probe passes",
+               "## Per-task verification",
                "## Worker reports", "REPORT CHANGES", "## Audit", "## Regression",
                "python -m pytest -q", "FINAL-TAIL-MARKER", "## Git diff vs base",
                "### Sensitive paths diff", "test_app.py",

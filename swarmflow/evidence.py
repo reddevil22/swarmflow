@@ -11,14 +11,27 @@ from pathlib import Path
 
 from .audit import audit
 from .recon import digest as recon_digest, load_recon
-from .workers import scan_trace
+from .workers import latest_verdict, scan_trace
 from . import runstate
 
 MANIFEST_PATHS = ["package.json", "package-lock.json", "pyproject.toml",
                   "requirements.txt", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock"]
 
 MAX_DIFF_CHARS = 20000
-MAX_REPORT_CHARS = 4000
+MAX_REPORT_HEAD = 1500
+MAX_REPORT_TAIL = 2500
+
+
+def clip(text: str, head: int = MAX_REPORT_HEAD, tail: int = MAX_REPORT_TAIL) -> str:
+    """Head + tail of a long text with an explicit omission marker.
+
+    Worker reports state their results at the end, so a plain head-cut loses the part
+    the verifier and acceptance actually need."""
+    text = text or ""
+    if len(text) <= head + tail:
+        return text
+    omitted = len(text) - head - tail
+    return f"{text[:head]}\n... ({omitted} chars omitted) ...\n{text[-tail:]}"
 
 
 def _git(project_root: str, *args: str, timeout: int = 60):
@@ -63,27 +76,22 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
             lines.append(f"  - acceptance: {'; '.join(task['acceptance'])}")
     lines.append("")
 
-    lines.append("## Worker reports")
     run_started = state.get("created_at", "")
+    lines.append("## Per-task verification")
     for task in ledger.list_tasks():
-        trace = task.get("worker_trace")
-        if not trace:
-            continue
         if run_started and (task.get("created_at") or "") < run_started:
-            lines.append(f"### {task['id']} (earlier run - report omitted)")
-            lines.append("")
             continue
-        spec_path = task.get("spec_path")
-        if spec_path and Path(spec_path).exists():
-            spec_text = Path(spec_path).read_text(encoding="utf-8", errors="replace")
-            lines.append(f"### {task['id']} - spec (frozen)")
-            lines.append(spec_text[:1500])
-            lines.append("")
-        scan = scan_trace(trace)
-        text = (scan.get("last_text") or "(no final report found)")[:MAX_REPORT_CHARS]
-        lines.append(f"### {task['id']} - report")
-        lines.append(text.strip())
-        lines.append("")
+        verdict = latest_verdict(str(root), task["id"])
+        if not verdict:
+            lines.append(f"- {task['id']}: (not verified)")
+            continue
+        findings = verdict.get("findings") or []
+        lines.append(f"- {task['id']}: {verdict.get('verdict', '?')} - "
+                     f"{len(findings)} finding(s)")
+        for finding in findings[:3]:
+            lines.append(f"  - [{finding.get('severity')}] "
+                         f"{str(finding.get('summary'))[:200]}")
+    lines.append("")
 
     lines.append("## Audit")
     try:
@@ -229,7 +237,39 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
                     lines.append("... (diff truncated)")
     else:
         lines.append("(no base sha recorded)")
+    lines.append("")
+    lines.extend(_report_sections(root, ledger, run_started))
     return "\n".join(lines) + "\n"
+
+
+def _report_sections(root: Path, ledger, run_started: str) -> list:
+    """Worker narratives, rendered last: objective sections are what the roles need.
+
+    Reports are bounded head+tail by ``clip`` so the result sections survive; a prompt
+    that truncates the bundle therefore loses narrative, never facts."""
+    lines = ["## Worker reports",
+             "- note: agent narratives (bounded head+tail); the sections above are the "
+             "final state"]
+    for task in ledger.list_tasks():
+        trace = task.get("worker_trace")
+        if not trace:
+            continue
+        if run_started and (task.get("created_at") or "") < run_started:
+            lines.append(f"### {task['id']} (earlier run - report omitted)")
+            lines.append("")
+            continue
+        spec_path = task.get("spec_path")
+        if spec_path and Path(spec_path).exists():
+            spec_text = Path(spec_path).read_text(encoding="utf-8", errors="replace")
+            lines.append(f"### {task['id']} - spec (frozen)")
+            lines.append(spec_text[:1500])
+            lines.append("")
+        scan = scan_trace(trace)
+        text = clip(scan.get("last_text") or "(no final report found)")
+        lines.append(f"### {task['id']} - report")
+        lines.append(text.strip())
+        lines.append("")
+    return lines
 
 
 def write_bundle(project_root: str, ledger, ignores: list | None = None) -> Path:

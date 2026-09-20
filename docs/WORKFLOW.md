@@ -50,7 +50,11 @@ Per wave boundary:
    `swarmflow plan` wrote it), the worker report, the owned files' contents and the
    latest gate results. A `pass` moves the task to `verified`; `fail`/`needs_fix`
    moves it to `needs_fix` and the findings are printed + stored in `evidence/verify_<id>.json`.
-   Recovery is a **fresh plan producing new task ids** - `wave-run` only dispatches `queued`.
+   `swarmflow retry --task <id>` re-queues a `needs_fix`/`failed` task (refused after 3
+   attempts) and the next `wave-run` dispatches it with the findings injected into the
+   brief as a fenced FIX CONTEXT block. A fresh plan producing new task ids remains the
+   path for scope changes. A `failed` task whose outcome is `no_changes` can be verified
+   directly (the delivery was right, the assertions were weak).
 5. new tasks (fixes/retries) are appended to the current or next wave
 
 ## Stage 5 - Integrate
@@ -139,8 +143,10 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
   logs/<task>_a<N>.jsonl     raw session traces
 <state_dir>/runs/<hash>/     control-plane state store: run.json + frozen.json
 ```
-The verifier/acceptance prompts read `evidence/bundle.md`; they are operator-run today
-(there is no `swarmflow verify`/`accept` command yet).
+The verifier/acceptance prompts get the assembled bundle (objective sections first -
+per-task verification, audit, regression, discrimination, sweep, diff - and the worker
+narratives last, bounded head+tail). Both are wired: `swarmflow verify --task <id>` and
+`swarmflow accept --project <path>`.
 
 ## Rules that are non-negotiable (from experiments)
 - artifact-based progress; exit codes are advisory only

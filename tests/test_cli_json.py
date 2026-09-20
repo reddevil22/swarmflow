@@ -43,13 +43,13 @@ def test_trace_output_is_always_valid_json(tmp_path, capsys):
     trace.write_text(json.dumps({
         "type": "message_end",
         "message": {"role": "assistant",
-                    "content": [{"type": "text", "text": "x" * 6000}],
+                    "content": [{"type": "text", "text": "x" * 20000}],
                     "usage": {"output": 5}},
     }) + "\n", encoding="utf-8")
     assert cli.main(["--config", str(_config(tmp_path)), "trace", str(trace)]) == 0
     payload = json.loads(capsys.readouterr().out)     # long text must not truncate JSON
     assert payload["exists"] is True
-    assert len(payload["last_text"]) == 4000          # capped field, valid document
+    assert len(payload["last_text"]) == 12000         # capped field, valid document
 
 
 def test_freeze_and_audit_json(tmp_path, capsys):

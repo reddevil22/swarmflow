@@ -323,6 +323,50 @@ def cmd_verify(args, config) -> int:
         return 0 if result["verdict"] == "pass" else 1
 
 
+def cmd_retry(args, config) -> int:
+    """Re-queue a needs_fix/failed task; the next dispatch injects the findings."""
+    from .workers import latest_verdict, worker_outcome
+    with Ledger(str(REPO_ROOT / config["paths"]["ledger"])) as ledger:
+        task = ledger.get(args.task)
+        if not task:
+            print(f"unknown task: {args.task}")
+            return 2
+        if task["status"] not in ("needs_fix", "failed"):
+            print(f"task {task['id']} is {task['status']}; retry takes a needs_fix or "
+                  "failed task")
+            return 2
+        if task["attempts"] >= 3:
+            print(f"task {task['id']} already used {task['attempts']} attempts; "
+                  "escalate or re-plan instead of retrying")
+            return 2
+        project_root = args.project or task["project"]
+        verdict = latest_verdict(project_root, task["id"])
+        findings = []
+        if verdict and str(verdict.get("verdict", "")).lower() != "pass":
+            findings = verdict.get("findings") or []
+        outcome = worker_outcome(task)
+        ledger.set_status(task["id"], "queued")
+        ledger.record_event(task["id"], "retry", json.dumps({
+            "attempts": task["attempts"], "findings": len(findings),
+            "outcome": outcome})[:500])
+        wave = task["wave"]
+    next_step = f"swarmflow wave-run --wave {wave}"
+    if args.json:
+        print(json.dumps({"task": task["id"], "status": "queued",
+                          "attempts": task["attempts"], "findings": findings,
+                          "outcome": outcome, "next": next_step}))
+    else:
+        print(f"retry {task['id']}: queued (attempt {task['attempts'] + 1} receives "
+              f"{len(findings)} finding(s) in its brief)")
+        for finding in findings[:10]:
+            print(f"  - [{finding.get('severity')}] {finding.get('summary')}")
+        if not findings:
+            print(f"  no verify findings; plain re-dispatch"
+                  + (f" (previous outcome: {outcome})" if outcome else ""))
+        print(f"next: {next_step} (re-runs that wave's gates and any other queued task)")
+    return 0
+
+
 def cmd_accept(args, config) -> int:
     """Frontier acceptance over the frozen criteria and the evidence bundle."""
     from .roles import RoleError, accept_run
@@ -915,6 +959,14 @@ def main(argv: list[str] | None = None) -> int:
                           help="defaults to the task's recorded project")
     verify_p.add_argument("--json", action="store_true")
     verify_p.set_defaults(func=cmd_verify)
+
+    retry_p = sub.add_parser("retry", help="re-queue a needs_fix/failed task (findings "
+                                           "are injected on the next dispatch)")
+    retry_p.add_argument("--task", required=True)
+    retry_p.add_argument("--project", default=None,
+                         help="defaults to the task's recorded project")
+    retry_p.add_argument("--json", action="store_true")
+    retry_p.set_defaults(func=cmd_retry)
 
     accept_p = sub.add_parser("accept", help="frontier acceptance over the evidence bundle")
     accept_p.add_argument("--project", required=True)

@@ -9,7 +9,8 @@ import yaml
 from swarmflow import cli, runstate
 from swarmflow.frontier import FrontierError
 from swarmflow.ledger import Ledger
-from swarmflow.roles import RoleError, _extract_json, plan_from_prd
+from swarmflow.roles import (RoleError, _extract_json, _gate_summary, accept_run,
+                             plan_from_prd, verify_task)
 
 
 class FakeBackend:
@@ -51,6 +52,99 @@ def _plan_json(tasks=1):
                    "spec": "do the thing", "acceptance": ["pytest passes"], "wave": 1}
                   for i in range(1, tasks + 1)],
         "acceptance_criteria": []})
+
+
+def test_verify_accepts_a_no_changes_failure_but_refuses_the_rest(tmp_path, monkeypatch):
+    project = tmp_path / "proj"
+    project.mkdir()
+    ledger = Ledger(str(tmp_path / "l.db"))
+    ledger.add_task("T1", str(project), wave=1, owner_files=["a.py"], acceptance=["x"])
+    ledger.set_status("T1", "failed", verdict=json.dumps({"outcome": "no_changes"}))
+    _patch(monkeypatch, FakeBackend(_verdict("needs_fix")))
+
+    result = verify_task({}, str(project), ledger, "T1")
+    assert result["status"] == "needs_fix"
+
+    ledger.set_status("T1", "failed", verdict=json.dumps({"outcome": "spawn_failed"}))
+    with pytest.raises(RoleError):
+        verify_task({}, str(project), ledger, "T1")
+    ledger.close()
+
+
+def test_gate_summary_states_the_counts_scope(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    runstate.save_run(str(project), {
+        "regression": {"baseline": {"command": "python -m pytest -q"}}})
+    summary = json.loads(_gate_summary(str(project)))
+    assert "python -m pytest -q" in summary["_counts_scope"]
+    assert "function count is not its case count" in summary["_counts_scope"]
+
+
+def test_accept_prompt_carries_bundle_material_beyond_the_old_cap(tmp_path, monkeypatch):
+    project = tmp_path / "proj"
+    project.mkdir()
+    ledger = Ledger(str(tmp_path / "l.db"))
+    for index in range(1, 4):                        # push the bundle past 6000 chars
+        ledger.add_task(f"T{index}", str(project), wave=1, owner_files=[f"t{index}.py"],
+                        acceptance=[f"criterion {index}: " + "detail " * 400])
+    ledger.set_status("T1", "verified")
+    (project / ".swarmflow").mkdir(parents=True, exist_ok=True)
+    (project / ".swarmflow" / "SPEC.md").write_text("AC-1: works\n", encoding="utf-8")
+    backend = _patch(monkeypatch, FakeBackend(json.dumps({
+        "verdict": "accepted", "criteria": [], "gaps": [], "residual_risks": []})))
+
+    accept_run({}, str(project), ledger)
+
+    prompt = backend.prompts[0]
+    assert "## Evidence bundle" in prompt
+    assert "criterion 3" in prompt
+    assert prompt.index("criterion 3") > 6000
+    ledger.close()
+
+
+def test_cli_retry_requeues_with_the_findings(tmp_path, capsys):
+    config = _config(tmp_path)
+    project = tmp_path / "proj"
+    project.mkdir()
+    evidence = project / ".swarmflow" / "evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "verify_T1.json").write_text(json.dumps({
+        "ok": True, "verdict": {"task_id": "T1", "verdict": "needs_fix", "findings": [
+            {"severity": "major", "summary": "weak assertion", "evidence": "",
+             "required_action": "assert equality"}], "requirement_coverage": [],
+            "uncovered": []}}), encoding="utf-8")
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    ledger.add_task("T1", str(project), wave=1, owner_files=["a.py"], acceptance=["x"])
+    ledger.set_status("T1", "needs_fix")
+    ledger.close()
+
+    assert cli.main(["--config", str(config), "retry", "--task", "T1"]) == 0
+    output = capsys.readouterr().out
+    assert "weak assertion" in output and "queued" in output
+
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    task = ledger.get("T1")
+    events = [event for event in ledger.events("T1", limit=20) if event["kind"] == "retry"]
+    ledger.close()
+    assert task["status"] == "queued" and events
+
+    assert cli.main(["--config", str(config), "retry", "--task", "T1"]) == 2
+
+
+def test_cli_retry_refuses_past_the_attempt_cap(tmp_path, capsys):
+    config = _config(tmp_path)
+    project = tmp_path / "proj"
+    project.mkdir()
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    ledger.add_task("T1", str(project), wave=1, owner_files=["a.py"], acceptance=["x"])
+    for _ in range(3):
+        ledger.bump_attempts("T1")
+    ledger.set_status("T1", "needs_fix")
+    ledger.close()
+
+    assert cli.main(["--config", str(config), "retry", "--task", "T1"]) == 2
+    assert "attempts" in capsys.readouterr().out
 
 
 def test_extract_json_variants():
