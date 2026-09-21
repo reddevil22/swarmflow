@@ -168,6 +168,39 @@ def test_build_prompt_places_fix_context_before_the_spec(tmp_path):
     ledger.close()
 
 
+def test_inline_sessions_do_not_touch_the_ledger(tmp_path, monkeypatch):
+    project = tmp_path / "p"
+    project.mkdir()
+    config = {"worker": {"poll_s": 0.1, "timeout_s": 5, "max_output_tokens": 1000,
+                         "max_turns": 45},
+              "paths": {"logs_dir": "logs"},
+              "swarm": {"concurrency": 1, "stagger_s": 0.0}}
+    ledger = Ledger(str(tmp_path / "l.db"))
+    runner = WorkerRunner(config, ledger, str(project), REPO_ROOT)
+
+    class Proc:
+        pid = 1
+
+        def poll(self):
+            return 0
+
+    class Out:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(runner, "_spawn", lambda task, thinking, attempt: {
+        "proc": Proc(), "out": Out(), "trace": "", "task": task, "thinking": thinking,
+        "before": {}, "pgid": None, "started": 0.0})
+    monkeypatch.setattr(runner, "_send_prompt", lambda handle, prompt: None)
+
+    result = runner.run_inline("hi", timeout_s=1)
+
+    assert result["task_id"] == "inline"
+    assert ledger.get("inline") is None                    # no phantom task row
+    assert ledger.events("inline", limit=10) == []         # no phantom events
+    ledger.close()
+
+
 def test_dispatch_injects_findings_from_attempt_two(tmp_path, monkeypatch):
     """Real WorkerRunner.run_wave path: attempt 1 is untouched, attempt 2 gets them."""
     project = tmp_path / "p"

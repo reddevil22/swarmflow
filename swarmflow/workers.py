@@ -152,15 +152,17 @@ class WorkerRunner:
                                                            handle.get("before")):
             outcome = "no_changes"
         status = "delivered" if outcome == "delivered" else "failed"
-        self.ledger.set_status(
-            task["id"], status,
-            worker_trace=handle["trace"],
-            artifacts=[f for f in task.get("owner_files", []) if (self.project_root / f).exists()],
-            verdict=json.dumps({"outcome": outcome, "missing": missing,
-                                "turns": scan["turns"], "out_tokens": scan["out_tokens"],
-                                "killed_for": killed_for, "forbidden": forbidden[:3],
-                                "server_launches": launches[:3]}),
-        )
+        # inline smoke sessions have no task row; do not write ledger state for them
+        if self.ledger.get(task["id"]) is not None:
+            self.ledger.set_status(
+                task["id"], status,
+                worker_trace=handle["trace"],
+                artifacts=[f for f in task.get("owner_files", []) if (self.project_root / f).exists()],
+                verdict=json.dumps({"outcome": outcome, "missing": missing,
+                                    "turns": scan["turns"], "out_tokens": scan["out_tokens"],
+                                    "killed_for": killed_for, "forbidden": forbidden[:3],
+                                    "server_launches": launches[:3]}),
+            )
         return {"task_id": task["id"], "outcome": outcome, "missing": missing,
                 "scan": scan, "server_launches": launches}
 

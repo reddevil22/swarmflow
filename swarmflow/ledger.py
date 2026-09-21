@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     attempts INTEGER NOT NULL DEFAULT 0,
     thinking TEXT NOT NULL DEFAULT 'high',
     worker_trace TEXT,
-    report_path TEXT,
     artifacts TEXT,
     verdict TEXT,
     created_at TEXT,
@@ -48,7 +47,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
-_UPDATABLE = {"worker_trace", "report_path", "artifacts", "verdict", "thinking", "module"}
+_UPDATABLE = {"worker_trace", "artifacts", "verdict", "thinking", "module"}
 
 
 def _now() -> str:
