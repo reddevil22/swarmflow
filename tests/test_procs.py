@@ -67,6 +67,22 @@ def test_kill_tree_never_signals_its_own_group(monkeypatch):
     assert procs.is_alive(os.getpid())
 
 
+def _ancestors_in(snapshot, pid, limit=10):
+    """Walk snapshot ppid links upward (a launcher makes the listener a child)."""
+    seen = set()
+    current = pid
+    for _ in range(limit):
+        entry = snapshot.get(current)
+        if not entry:
+            break
+        parent = entry.get("ppid") or 0
+        if not parent or parent in seen:
+            break
+        seen.add(parent)
+        current = parent
+    return seen
+
+
 def test_listening_ports_maps_pid():
     import socket
 
@@ -86,10 +102,18 @@ def test_listening_ports_maps_pid():
         found = False
         for _ in range(25):
             time.sleep(0.2)
-            if port in procs.listening_ports().get(proc.pid, []):
+            owners = [pid for pid, ports in procs.listening_ports().items()
+                      if port in ports]
+            if not owners:
+                continue
+            # a venv's python.exe (or py.exe) is a launcher: the socket belongs to its
+            # child, so accept any owner that descends from the spawned process
+            snapshot = procs.snapshot()
+            if any(pid == proc.pid or proc.pid in _ancestors_in(snapshot, pid)
+                   for pid in owners):
                 found = True
                 break
-        assert found, f"port {port} was not attributed to pid {proc.pid}"
+        assert found, f"port {port} was not attributed to the spawned server"
     finally:
         proc.kill()
         proc.wait()

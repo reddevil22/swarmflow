@@ -304,11 +304,20 @@ def test_plan_load_warns_about_stale_listener_and_can_kill_it(tmp_path, capsys):
         assert cli.main(["--config", str(config), "plan-load", "--kill-stale",
                          "--plan", str(plan_path2)]) == 0
         assert "--kill-stale terminated" in capsys.readouterr().out
-        time.sleep(1)
-        assert not procs.is_alive(server_pid)
+        assert _wait_dead(server_pid), "--kill-stale did not terminate the listener"
     finally:
         if server_pid and procs.is_alive(server_pid):
             procs.kill_tree(server_pid, server_pid)
+
+
+def _wait_dead(pid, timeout: float = 8.0) -> bool:
+    """Bounded wait for a process to disappear (kills land asynchronously)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not procs.is_alive(pid):
+            return True
+        time.sleep(0.2)
+    return False
 
 
 @pytest.mark.skipif(not GIT, reason="git not available")
@@ -403,7 +412,7 @@ def test_brownfield_wave_run_sweeps_leaked_processes(tmp_path, monkeypatch):
         data = json.loads((repo / ".swarmflow" / "evidence"
                            / "wave1.sweep.json").read_text(encoding="utf-8"))
         assert data["counts"]["killed"] >= 1
-        assert not procs.is_alive(leaked[1])
+        assert _wait_dead(leaked[1]), "the leak survived the kill-mode sweep"
         assert procs.is_alive(leaked[0])
     finally:
         for pid in leaked:
