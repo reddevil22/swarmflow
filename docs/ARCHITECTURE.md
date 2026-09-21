@@ -47,11 +47,11 @@ Measured behavior this design relies on (stress test, 2026-09-19):
 | Failure | Detection | Response |
 |---|---|---|
 | reasoning spiral into output cap | trace: output tokens >= 0.9*cap and empty final text, or no `agent_end` | retry same spec with thinking `medium` (proven recovery) |
-| timeout / stall | process timeout (config `worker_timeout_s`) | kill, mark failed, requeue once |
+| timeout / stall | process timeout (config `worker.timeout_s`) | kill, mark failed, requeue once |
 | tests pass but requirements unmet | verifier stage (`swarmflow verify`, frontier) | task moves to `needs_fix`; findings land in `evidence/verify_<id>.json`, `swarmflow retry --task` re-queues with them injected into the brief |
-| silent cross-cutting regression | MUST-KEEP-WORKING contract suite run per wave | reject delivery, fix task |
+| silent cross-cutting regression | the project regression suite is re-run after every wave and compared by failure identity | reject delivery, fix task |
 | regression introduced at a wave boundary | regression gate re-runs the project suite after every wave and diffs failing-test fingerprints (baseline in the control-plane state store) | wave marked failed, ledger event, compare file, fix task |
-| worker rewrites gate state (`recon.json`, `run.json`, project `frozen.json`) | gate inputs live in `REPO_ROOT/state/runs/<hash-of-project>/`; the regression command is frozen at plan-load and never re-derived from the project | audit outcome unchanged; the project-side `run.json` is only a marked mirror |
+| worker rewrites gate state (`recon.json`, `run.json`, project `frozen.json`) | gate inputs live in `<state_dir>/runs/<hash-of-project>/` (default: the per-user state directory); the regression command is frozen at plan-load and never re-derived from the project | audit outcome unchanged; the project-side `run.json` is only a marked mirror |
 | frozen file modified between waves (laundering) | the per-wave freeze carries unowned hashes instead of re-hashing them; the wave that owns a file seals its post-wave content (`audit.seal`) | the finding stays red until an explicit `swarmflow freeze` re-baseline |
 | tests pass but do not discriminate (accommodating tests) | discrimination check: the wave's owned test files re-run at the run's base commit in a throwaway git worktree | verdicts in the ledger + evidence bundle; `discrimination.mode: enforce` fails the wave |
 | wave creates a file and nobody commits it | `audit.seal` adds owned, untracked, non-ignored, non-exempt files to the baseline (cap 200/wave) and drops them from the owner map | the next wave neither flags it as `added_unowned` nor silently trusts edits (`modified_frozen` / `deleted_frozen`); overflow past the cap keeps violating |
@@ -124,11 +124,16 @@ configured.
 ## Repository layout
 
 ```
-swarmflow/            control plane package (config, ledger, runstate, frontier, workers,
-                      recon, plan, audit, regression, discrimination, procs, sweep,
-                      evidence, cli)
-config/               swarmflow.yaml (models, concurrency, timeouts, paths)
-prompts/              planner, task brief, verifier, acceptance templates
-AGENTS.worker.md      canonical worker rules (copied into scaffolded projects)
-tests/                unit tests for ledger, frontier parsing, trace analysis
+swarmflow/            control plane package
+  (config, ledger, runstate, resources, frontier, recon, plan, audit, regression,
+   discrimination, procs, sweep, evidence, roles, pipeline)
+  prompt.py           worker brief rendering + fix context
+  trace.py            session-trace analysis (turns, forbidden actions, launches)
+  gitutil.py          one git subprocess helper
+  cli.py              argparse + exit codes; pipeline.py owns the wave policy
+  assets/             shipped files: planner/task_brief/verifier/acceptance prompts,
+                      AGENTS.worker.md, swarmflow.example.yaml (package-data)
+config/               optional source-checkout config (untracked); the default config
+                      path is per-user (`swarmflow init` prints it)
+tests/                unit tests for ledger, frontier parsing, trace analysis, gates
 ```

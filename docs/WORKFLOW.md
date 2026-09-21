@@ -6,8 +6,8 @@ non-goals, acceptance criteria. Scope is frozen at the end of this stage.
 
 ## Stage 1 - Plan (frontier)
 `swarmflow plan --prd <file> --project <path> [--mode brownfield] [--load]` invokes
-`prompts/planner.md`, validates the result (one retry with the validation errors as
-feedback), injects `project`/`mode` from the CLI, and writes
+`swarmflow/assets/prompts/planner.md`, validates the result (one retry with the validation
+errors as feedback), injects `project`/`mode` from the CLI, and writes
 `<project>/.swarmflow/plan.yaml` (raw model output in `evidence/plan.json`).
 Output: `plan.yaml` containing
 - work packages with **disjoint file ownership** (one module or feature per package)
@@ -34,7 +34,8 @@ Output: `plan.yaml` containing
 
 ## Stage 4 - Verify (scripts + frontier)
 Per wave boundary:
-1. full regression suite + MUST-KEEP-WORKING contract checks
+1. the project regression suite is re-run and compared against the frozen baseline by
+   failure identity (fingerprints + executed-test inventory)
 2. discrimination check: the wave's owned test files re-run at the run's base commit in
    a throwaway worktree (`evidence/wave<N>.discrimination.json`; `enforce` mode fails
    the wave, `warn` records evidence). Python projects get their worktree source roots
@@ -59,7 +60,8 @@ Per wave boundary:
 
 ## Stage 5 - Integrate
 - integration session(s) own shared files (`__init__`, CLI wiring, package config)
-- end-to-end demo command runs green; its transcript is kept as evidence
+- the project suite must stay green across the integration wave; the run's evidence
+  bundle carries the diff and every gate result for the operator's branch review
 
 ## Stage 6 - Human review (HUMAN CHECKPOINT)
 - the control plane leaves the work on the run branch (`swarmflow/<name>`) with an
@@ -72,9 +74,9 @@ Per wave boundary:
 - planned: build the artifact (wheel/binary/container per project type), run the
   packaged artifact's smoke test, attach build outputs + checksums to the evidence bundle
 - acceptance is wired: `swarmflow accept --project <path>` maps the frozen acceptance
-  criteria to evidence via `prompts/acceptance.md` + `evidence/bundle.md`; an `accepted`
-  verdict moves every `verified` task to `accepted`, `rejected` prints the gaps. The
-  packaged-artifact part remains roadmap.
+  criteria to evidence via `swarmflow/assets/prompts/acceptance.md` + the assembled
+  evidence bundle; an `accepted` verdict moves every `verified` task to `accepted`,
+  `rejected` prints the gaps. The packaged-artifact part remains roadmap.
 
 ## Brownfield runs (existing repositories)
 
@@ -88,7 +90,8 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    (`--allow-dirty` overrides); `.swarmflow/` and `logs/` are appended to `.gitignore`;
    the run branch `swarmflow/<name>` is created or reused; the gate command is resolved
    once (config override or recon) and **frozen in the control-plane state store**
-   (`<state_dir>/runs/<hash-of-project>/run.json`, default `<repo>/state/`) together with
+   (`<state_dir>/runs/<hash-of-project>/run.json`, default: the per-user state directory,
+   e.g. `%LOCALAPPDATA%/swarmflow` or `$XDG_STATE_HOME/swarmflow`) together with
    mode/branch/base_sha. The project-side `.swarmflow/run.json` is a marked mirror that
    nothing reads; a pre-upgrade run is adopted once (structural fields only). Pre-existing
    untracked files are snapshotted (file-level) into the run and exempted from the scope
@@ -129,6 +132,8 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
 ```
 <project>/.swarmflow/
   SPEC.md                    frozen scope + acceptance criteria
+  PRD.md                     the exact PRD handed to the planner (hash-pinned)
+  plan.yaml                  the validated plan (unless planned elsewhere with --out)
   specs/<task>.md            the spec text handed to each worker
   recon.json                 reconnaissance digest (stacks, commands, tests, git state)
   evidence/

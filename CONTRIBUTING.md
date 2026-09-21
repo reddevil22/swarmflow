@@ -16,9 +16,9 @@ python -m pytest tests -q          # must pass; tests never use the network
 - `docs/ARCHITECTURE.md` documents roles, the task state machine, the failure
   taxonomy, and why each guardrail exists. Behavior changes must update it.
 - `docs/WORKFLOW.md` is the contract for the PRD-to-MVP pipeline stages.
-- Prompt templates under `prompts/` are part of the behavior surface: when you change
-  a template, update the code that consumes its output (e.g. plan validation) and the
-  matching docs in the same change.
+- Prompt templates under `swarmflow/assets/prompts/` are part of the behavior surface:
+  when you change a template, update the code that consumes its output (e.g. plan
+  validation) and the matching docs in the same change.
 - Keep the CLI non-interactive and scriptable; new status-like commands should offer
   `--json` output. Success is judged by artifacts and exit codes that mean things -
   never by trusting an agent's self-report.
@@ -32,7 +32,8 @@ python -m pytest tests -q          # must pass; tests never use the network
 1. One logical change per PR; describe what failure mode or use case it addresses.
 2. Run `python -m pytest tests -q` before opening; include the result in the PR body.
 3. Update `CHANGELOG.md` under `[Unreleased]` for user-visible changes.
-4. CI is not wired up yet - maintainers run the suite manually.
+4. CI runs the suite on Linux and Windows (`python -m pytest -q`) plus a wheel build +
+   install smoke; keep it green.
 
 ## Reporting issues
 Include: what you ran, what you expected, what happened, and the relevant ledger

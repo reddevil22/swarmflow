@@ -59,8 +59,11 @@ for a five-task production example (NestJS + hexagonal architecture).
   tasks of the run. Shared surfaces (manifests, tool configs, package entry points,
   registries/DI wiring) belong to a dedicated integration task, and per-wave freezes
   make them mutable only in that task's wave.
-- All swarmflow artifacts live under `.swarmflow/` (SPEC.md, specs/, run.json,
-  recon.json, frozen.json, evidence/), which is appended to the repo's `.gitignore`.
+- All swarmflow artifacts live under `.swarmflow/` (SPEC.md, plan.yaml, PRD.md, specs/,
+  recon.json, run.json, evidence/), which is appended to the repo's `.gitignore`. The
+  frozen baseline and the run record are **not** here: they live in the control-plane
+  state store outside the project (`<state_dir>/runs/<hash-of-project>/`), and the
+  project-side `.swarmflow/run.json` is an informational mirror nothing reads.
 - The worker brief injects the canonical working rules inline (the repo's own
   AGENTS.md is never overwritten) and carries the regression command as
   MUST KEEP WORKING.

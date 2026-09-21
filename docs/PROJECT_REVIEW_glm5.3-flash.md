@@ -1,5 +1,19 @@
 # Project Review — swarmflow
 
+> **Status banner (2026-09-20):** this review targets the revision at `78da8bd`. Several
+> findings have since been fixed and are kept here for the record:
+> - repo-checkout coupling — shipped assets moved into the package and resolved via
+>   `importlib.resources`; state and config default to per-user paths
+> - prompt templates had no callers — `plan`, `verify` and `accept` are wired, with
+>   parsers and tests; the review's "no verify/accept commands" notes are superseded
+> - `run_inline` ledger pollution — fixed, with a regression test
+> - gate state was worker-writable — the control-plane state store lives outside the
+>   project, and pre-existing untracked files are exempted by a preflight snapshot
+> - `cli.py` god module and `WorkerRunner` god class — extracted into `pipeline.py`,
+>   `prompt.py` and `trace.py`
+> Remaining findings (frozen-file laundering variants, parser hardening, worker-authored
+> test poisoning) are still open where the notes below describe them.
+
 - **Date:** 2026-09-19
 - **Review model:** glm5.3-flash (multi-agent review, five parallel axes)
 - **Scope:** Full repository — `swarmflow/` (14 modules, ~3,600 LOC), `tests/` (16 files, 147 tests), `prompts/`, `config/`, `docs/`, `README.md`, `AGENTS.md`, `CONTRIBUTING.md`

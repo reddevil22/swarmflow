@@ -15,13 +15,15 @@ single source of truth; every claim is verified by artifacts, never by exit code
 - [Workflow](docs/WORKFLOW.md) - PRD to MVP stages, evidence bundle
 - [Plan schema](docs/PLAN_SCHEMA.md) - the machine-readable plan format
 - [Case study](docs/CASE_STUDY.md) - first full validation run (TaskDock MVP-1)
+- [Executive summary](docs/EXECUTIVE_SUMMARY.md) - what it does, how local inference is used
+- [Independent review](docs/PROJECT_REVIEW_glm5.3-flash.md) - adversarial audit of an earlier revision
 - [Agent guide](AGENTS.md) - for agents working on this repo
 
 ## Quickstart
 ```bash
 pip install -e ".[dev]"          # runtime deps: pyyaml + psutil; pytest for development
-swarmflow init                   # writes config/swarmflow.yaml from the example
-$EDITOR config/swarmflow.yaml    # set your worker model id and CLI paths
+swarmflow init                   # writes the per-user config (printed on screen)
+$EDITOR <that path>              # set your worker model id and CLI paths
 swarmflow plan --prd PRD.md --project <path> --load   # frontier planner -> plan.yaml
 swarmflow smoke-frontier         # configured frontier backend reachability
 swarmflow smoke-worker           # local worker reachability (Pi + model server)

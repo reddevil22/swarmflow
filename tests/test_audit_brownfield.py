@@ -18,6 +18,9 @@ def _git_available():
 
 GIT = _git_available()
 
+# every test here builds a real git repo, guarded once at module level
+pytestmark = pytest.mark.skipif(not GIT, reason="git not available")
+
 
 def _init_repo(root):
     def run(*args):

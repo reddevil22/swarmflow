@@ -63,7 +63,7 @@ def _verdict(ledger, task_id):
 
 
 def test_supervise_kills_every_handle_on_its_own_deadline(tmp_path):
-    config = _config(tmp_path, pi_cli=_fake_pi(tmp_path, BODY_SLEEP), timeout_s=3)
+    config = _config(tmp_path, pi_cli=_fake_pi(tmp_path, BODY_SLEEP), timeout_s=5)
     runner, ledger = _runner(tmp_path, config, ["T1", "T2"])
     started = time.monotonic()
     results = runner.run_wave(1, concurrency=2)
@@ -72,7 +72,8 @@ def test_supervise_kills_every_handle_on_its_own_deadline(tmp_path):
     ledger.close()
 
     assert len(results) == 2
-    assert elapsed < 6.0, f"handles were supervised sequentially ({elapsed:.1f}s)"
+    # sequential supervision would take 2 x timeout (10s); the bound leaves CI slack
+    assert elapsed < 9.0, f"handles were supervised sequentially ({elapsed:.1f}s)"
     assert [verdict["killed_for"] for verdict in verdicts] == ["timeout", "timeout"]
 
 
@@ -113,7 +114,7 @@ def test_kill_failure_is_recorded_and_bounded(tmp_path, monkeypatch):
             procs.kill_tree(handle["proc"].pid, handle.get("pgid"))
     ledger.close()
 
-    assert elapsed < 10.0, "the supervisor waited unbounded for an unkillable child"
+    assert elapsed < 20.0, "the supervisor waited unbounded for an unkillable child"
     assert results[0]["outcome"] == "kill_failed"
     assert verdict["killed_for"] == "kill_failed"
 

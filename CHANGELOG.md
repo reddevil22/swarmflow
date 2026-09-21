@@ -6,7 +6,36 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+- **CI** (`.github/workflows/ci.yml`): the suite runs on Linux (3.11, 3.13) and Windows
+  (3.13), and a packaging job builds the wheel, installs it into a clean environment and
+  smokes `swarmflow init` + `status --json` outside the source tree.
+- **`docs/EXECUTIVE_SUMMARY.md`** (linked from the README, with the independent review).
+
+### Changed
+- **The package is installable**: shipped assets (planner/verifier/acceptance prompts,
+  `AGENTS.worker.md`, the example config) moved into `swarmflow/assets/` and are resolved
+  through `swarmflow.resources.asset` (`importlib.resources`); control state, the ledger
+  and the config default to per-user paths (`SWARMFLOW_STATE_DIR`, `%LOCALAPPDATA%`,
+  `$XDG_STATE_HOME`, `~/Library/Application Support`). `pyproject` gains package-data, a
+  dynamic version, an SPDX license and repository URLs.
+- **Structure**: `cli.py` (1010 lines) is now `cli.py` (argparse + exit codes) plus
+  `pipeline.py` (preflight, freeze, dispatch, gates, verify, report); `workers.py` is now
+  `prompt.py` (brief rendering + fix context), `trace.py` (trace analysis) and
+  `workers.py` (supervision only); one `gitutil.git` replaces three drifted copies, and
+  `runstate.persist_run` / `evidence.latest_artifact` / `procs.format_ports` collapse the
+  remaining duplication.
+- **Docs truth-up**: architecture layout and config key names, workflow claims (one
+  regression gate, no demo transcript), plan-schema artifact locations, and the shipped
+  acceptance prompt now describe what the code does; the independent review carries a
+  status banner listing what has since been fixed.
+- Tracked files are free of personal paths and the LAN address, and `.gitignore` covers
+  the tool's own artifacts (`.swarmflow/`, `*.db`, `.env*`, editor dirs).
+
 ### Fixed
+- **Dead ledger surface**: the never-used `report_path` column and the phantom `inline`
+  task row that `run_inline` recorded are gone (the smoke path writes no ledger state,
+  pinned by a test).
 - **Fix cycles can close**: `swarmflow retry --task <id>` re-queues a `needs_fix`/`failed`
   task (refused after 3 attempts) and the next dispatch injects the verifier's findings
   into the brief as a fenced `FIX CONTEXT` block (attempt >= 2 only; the findings quote

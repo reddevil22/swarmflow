@@ -20,8 +20,8 @@ each criterion to evidence and give a final verdict. Respond with ONLY a JSON ob
 }
 
 ## Rules
-1. A criterion is met only with concrete evidence (passing command, demo output line,
-   test name). "Implemented" is not evidence.
+1. A criterion is met only with concrete evidence (a passing command with its counts, a
+   gate result, a test name cited from the bundle). "Implemented" is not evidence.
 2. Reject if any critical criterion lacks evidence; do not accept on promise.
 3. Note anything in the evidence bundle that contradicts a worker report.
 4. Gaps suitable for a follow-up release go to mvp2_candidate with a one-line rationale.

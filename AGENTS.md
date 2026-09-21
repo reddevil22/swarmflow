@@ -20,23 +20,23 @@ plane, with a frontier model at decision gates. Read `docs/ARCHITECTURE.md` and
   them with something stronger and documenting it in `docs/ARCHITECTURE.md`.
 - Configuration must stay portable: no personal paths in tracked files; resolve
   executables via `swarmflow.config.resolve_executable` and allow `${ENV_VAR}`
-  expansion. Local overrides go in `config/swarmflow.yaml` (untracked).
+  expansion. The default config is per-user (`swarmflow init` prints the path);
+  `SWARMFLOW_CONFIG` overrides it.
 - Frontier backends live in `swarmflow/frontier.py`. To add one, implement
   `complete(prompt, **kwargs)` returning the normalized dict and register it in
   `build_backend()`. Keep tests network-free (inject a transport, or run a local
   process such as `sys.executable`).
-- Prompt templates in `prompts/` are part of the behavior surface. If you change a
-  template, update the matching parser/validator (e.g. plan schema) in the same change.
+- Prompt templates under `swarmflow/assets/prompts/` are part of the behavior surface.
+  If you change a template, update the matching parser/validator (e.g. plan schema) in
+  the same change.
 
 ## Layout
-- `swarmflow/` - control plane package (config, ledger, frontier, workers, audit,
-  recon, regression, evidence, plan, cli)
-- `prompts/` - planner / task brief / verifier / acceptance templates
+- `swarmflow/` - control plane package (config, ledger, pipeline, workers, prompt,
+  trace, audit, recon, regression, evidence, plan, cli)
+- `swarmflow/assets/` - shipped prompts, worker rules and the example config
 - `docs/` - architecture, workflow, plan schema, case study
 - `tests/` - unit tests (fast, no network)
 - `examples/` - runnable example plan
-- `config/swarmflow.example.yaml` - copy to `config/swarmflow.yaml` (or run
-  `swarmflow init`)
 
 ## Common commands
 ```
@@ -56,4 +56,5 @@ swarmflow smoke-worker          # needs Pi + a local model endpoint
 - `NODE_ENV=production` in this environment makes npm omit devDependencies: when someone
   installs dependencies for a target repo, use `npm ci --include=dev`. The control plane
   never installs anything itself.
-- The ledger (`state/ledger.db`) is local state, never committed.
+- The ledger is local state under the control-plane state directory (never committed);
+  it defaults to `<user state dir>/ledger.db` and follows `paths.ledger` when set.
