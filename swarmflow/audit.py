@@ -13,10 +13,10 @@ import fnmatch
 import hashlib
 import json
 import os
-import subprocess
 from pathlib import Path
 
 from . import runstate
+from .gitutil import git
 from .recon import untracked_paths
 
 MAX_SEAL_ADDITIONS = 200
@@ -235,18 +235,8 @@ def audit(project_root: str, ignores: list[str] | None = None,
     return {"ok": not violations, "violations": violations}
 
 
-def _git(project_root: Path, *args: str, timeout: int = 60):
-    try:
-        proc = subprocess.run(["git", *args], cwd=str(project_root), capture_output=True,
-                              text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout)
-        return proc.returncode == 0, (proc.stdout or "")
-    except (OSError, subprocess.TimeoutExpired):
-        return False, ""
-
-
 def _git_tracked(root: Path) -> list:
-    ok, out = _git(root, "ls-files")
+    ok, out = git(root, "ls-files", strip=False)
     if not ok:
         return []
     return [line.strip() for line in out.splitlines() if line.strip()]
@@ -266,7 +256,7 @@ def _audit_brownfield(root: Path, baseline: dict, ignores: list | None = None,
     a violation; gitignored files are invisible to both lists by construction.
     Pre-existing untracked paths (run state) are exempt by exact path."""
     preexisting = set(untracked_baseline or [])
-    ok, _ = _git(root, "rev-parse", "--is-inside-work-tree")
+    ok, _ = git(root, "rev-parse", "--is-inside-work-tree", strip=False)
     if not ok:
         return {"ok": False, "violations": [
             {"kind": "no_git", "path": str(root),

@@ -20,6 +20,11 @@ def available() -> bool:
     return psutil is not None
 
 
+def format_ports(ports) -> str:
+    """Render a port list for reports; a dash when there is none."""
+    return ", ".join(str(port) for port in ports or []) or "-"
+
+
 def spawn_flags() -> dict:
     """Popen kwargs that make the child a session/group leader on POSIX."""
     return {"start_new_session": True} if os.name != "nt" else {}

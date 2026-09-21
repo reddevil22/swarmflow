@@ -16,7 +16,7 @@ from .config import DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, REPO_ROOT, load_co
 from .frontier import FrontierError, build_backend
 from .ledger import Ledger
 from .plan import enqueue_plan, load_plan, scaffold, validate_plan
-from .procs import kill_tree, snapshot as process_snapshot
+from .procs import format_ports, kill_tree, snapshot as process_snapshot
 from .regression import compare, run_regression
 from .sweep import find_stale, run_sweep
 from .workers import WaveAborted, WorkerRunner, scan_trace
@@ -174,8 +174,7 @@ def _brownfield_preflight(plan: dict, project_root: Path, plan_path: str,
             data["regression_source"] = "recon"
         else:
             data.setdefault("regression_source", "previous run")
-    runstate.save_run(str(project_root), data)
-    runstate.write_mirror(str(project_root), data)
+    runstate.persist_run(str(project_root), data, mirror=True)
     print(f"brownfield preflight ok: branch {branch} ({action}), "
           f"base {str(state.get('head') or '')[:10]}, recon written, gate command frozen")
     exempted = data.get("untracked_baseline") or []
@@ -186,7 +185,7 @@ def _brownfield_preflight(plan: dict, project_root: Path, plan_path: str,
     stale = find_stale(str(project_root), process_snapshot(), config.get("sweep") or {})
     if stale:
         for record in stale:
-            ports = ",".join(str(port) for port in record["ports"]) or "-"
+            ports = format_ports(record["ports"])
             print(f"warning: project-attributed listener already running: pid "
                   f"{record['pid']} {record['name']} (ports: {ports})")
         if kill_stale:
@@ -236,8 +235,7 @@ def _plan_load(plan_path: str, project: str | None, config, allow_dirty: bool = 
             data["regression_command"] = command
             data.setdefault("regression_source",
                             "config override" if override else "recon")
-        runstate.save_run(str(project_root), data)
-        runstate.write_mirror(str(project_root), data)
+        runstate.persist_run(str(project_root), data, mirror=True)
     ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
     counts = enqueue_plan(ledger, plan, project_root, info["spec_paths"])
     ledger.close()
@@ -280,7 +278,7 @@ def cmd_plan(args, config) -> int:
     data = runstate.load_run(str(project_root))
     data["prd_path"] = str(prd_store)
     data["prd_sha256"] = hashlib.sha256(prd_text.encode("utf-8")).hexdigest()
-    runstate.save_run(str(project_root), data)
+    runstate.persist_run(str(project_root), data)
     if args.json:
         print(json.dumps({"plan": str(out), "tasks": result["tasks"],
                           "waves": result["waves"], "retried": result["retried"],
@@ -398,8 +396,7 @@ def _save_regression_baseline(project_root: str, baseline: dict) -> None:
     data = runstate.load_run(project_root)
     stored = {key: value for key, value in baseline.items() if key != "output"}
     data.setdefault("regression", {})["baseline"] = stored
-    runstate.save_run(project_root, data)
-    runstate.write_mirror(project_root, data)
+    runstate.persist_run(project_root, data, mirror=True)
 
 
 def _slim_comparison(comparison: dict) -> dict:
@@ -771,7 +768,7 @@ def _run_sweep(project_root: str, wave: int, before: dict, after: dict, wave_sta
         print(f"process sweep: {counts['orphans']} new project process(es) from this wave "
               f"(mode={mode})")
         for record in result.get("orphans") or []:
-            ports = ",".join(str(port) for port in record["ports"]) or "-"
+            ports = format_ports(record["ports"])
             suffix = " [killed]" if record["pid"] in killed else ""
             print(f"  pid {record['pid']} {record['name']}: {record['cmd'][:80]} "
                   f"(ports: {ports}){suffix}")
@@ -783,7 +780,7 @@ def _run_sweep(project_root: str, wave: int, before: dict, after: dict, wave_sta
     else:
         print("process sweep: clean")
     for record in result.get("pre_existing") or []:
-        ports = ",".join(str(port) for port in record["ports"]) or "-"
+        ports = format_ports(record["ports"])
         print(f"  pre-existing listener: pid {record['pid']} {record['name']} "
               f"(ports: {ports}) - left untouched")
     return result
@@ -855,7 +852,7 @@ def cmd_freeze(args, config) -> int:
     if mode == "brownfield":
         run_state["frozen_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         run_state.setdefault("mode", mode)
-        runstate.save_run(project_root, run_state)
+        runstate.persist_run(project_root, run_state)
     if args.json:
         print(json.dumps(info))
     else:

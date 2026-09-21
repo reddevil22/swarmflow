@@ -13,7 +13,7 @@ from pathlib import Path
 from . import runstate
 from .audit import audit
 from .config import REPO_ROOT
-from .evidence import bundle, clip
+from .evidence import bundle, clip, latest_artifact
 from .frontier import build_backend
 from .plan import validate_plan
 from .recon import digest as recon_digest, load_recon
@@ -117,18 +117,14 @@ def _call(config, prompt: str) -> dict:
 
 def _gate_summary(project_root: str, ignores: list | None = None) -> str:
     """Compact view of the latest gate artifacts for one task-scoped prompt."""
-    evidence_dir = Path(project_root) / ".swarmflow" / "evidence"
     summary = {}
     for pattern, key in (("wave*.compare.json", "regression"),
                          ("wave*.discrimination.json", "discrimination"),
                          ("wave*.sweep.json", "sweep")):
-        files = sorted(evidence_dir.glob(pattern), key=lambda item: item.stat().st_mtime)
-        if not files:
+        latest, payload = latest_artifact(project_root, pattern)
+        if latest is None:
             continue
-        try:
-            summary[key] = json.loads(files[-1].read_text(encoding="utf-8"))
-        except ValueError:
-            summary[key] = {"unreadable": files[-1].name}
+        summary[key] = payload if payload is not None else {"unreadable": latest.name}
     try:
         state = runstate.load_run(project_root)
         summary["audit"] = audit(project_root,

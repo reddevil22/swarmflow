@@ -323,6 +323,17 @@ def parse_report(output: str) -> dict:
     return report
 
 
+def _capture_report(result: dict, report: dict, stdout: str) -> None:
+    """Fold one parse_report output into the result (shared by success and timeout)."""
+    result["family"] = report["family"]
+    result["fingerprints"] = report["fingerprints"]
+    result["errors"] = report["errors"]
+    result["tests_ran"] = report["tests_ran"]
+    result["skipped"] = report["skipped"]
+    result["unit"] = report["unit"]
+    result["output"] = stdout[-20000:]
+
+
 def run_regression(project_root: str, command: str, timeout_s: float = 900,
                    evidence_path: str | None = None, env: dict | None = None) -> dict:
     """Run the suite via the shell (user-visible commands, .cmd shims), capture output.
@@ -348,16 +359,10 @@ def run_regression(project_root: str, command: str, timeout_s: float = 900,
             report = parse_report(full)
             result["rc"] = proc.returncode
             result["failures"] = report["failures"]
-            result["family"] = report["family"]
-            result["fingerprints"] = report["fingerprints"]
-            result["errors"] = report["errors"]
-            result["tests_ran"] = report["tests_ran"]
-            result["skipped"] = report["skipped"]
-            result["unit"] = report["unit"]
+            _capture_report(result, report, full)
             result["ok"] = proc.returncode == 0
             if proc.returncode == 5 and result["failures"] is None:
                 result["note"] = "no tests collected (pytest rc=5) - check the command"
-            result["output"] = full[-20000:]
         except subprocess.TimeoutExpired:
             result["timeout"] = True
             kill_tree(proc.pid)
@@ -367,14 +372,7 @@ def run_regression(project_root: str, command: str, timeout_s: float = 900,
                 proc.kill()
                 partial = ""
             partial = partial or ""
-            report = parse_report(partial)
-            result["family"] = report["family"]
-            result["fingerprints"] = report["fingerprints"]
-            result["errors"] = report["errors"]
-            result["tests_ran"] = report["tests_ran"]
-            result["skipped"] = report["skipped"]
-            result["unit"] = report["unit"]
-            result["output"] = partial[-20000:]
+            _capture_report(result, parse_report(partial), partial)
             result["note"] = f"timed out after {timeout_s}s"
     except OSError as exc:
         result["note"] = f"could not launch: {exc}"

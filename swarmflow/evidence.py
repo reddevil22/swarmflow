@@ -6,10 +6,11 @@ run base (with sensitive paths - tests and dependency manifests - diffed in full
 """
 
 import json
-import subprocess
 from pathlib import Path
 
 from .audit import audit
+from .gitutil import git
+from .procs import format_ports
 from .recon import digest as recon_digest, load_recon
 from .workers import latest_verdict, scan_trace
 from . import runstate
@@ -34,14 +35,20 @@ def clip(text: str, head: int = MAX_REPORT_HEAD, tail: int = MAX_REPORT_TAIL) ->
     return f"{text[:head]}\n... ({omitted} chars omitted) ...\n{text[-tail:]}"
 
 
-def _git(project_root: str, *args: str, timeout: int = 60):
+def latest_artifact(project_root, pattern: str):
+    """Newest ``.swarmflow/evidence`` file matching ``pattern`` and its parsed JSON.
+
+    Returns ``(path, payload)``; ``(path, None)`` when the file exists but is unreadable,
+    and ``(None, None)`` when nothing matches."""
+    evidence_dir = Path(project_root) / ".swarmflow" / "evidence"
+    files = sorted(evidence_dir.glob(pattern), key=lambda item: item.stat().st_mtime)
+    if not files:
+        return None, None
+    latest = files[-1]
     try:
-        proc = subprocess.run(["git", *args], cwd=project_root, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout)
-        return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
-    except (OSError, subprocess.TimeoutExpired):
-        return False, ""
+        return latest, json.loads(latest.read_text(encoding="utf-8"))
+    except ValueError:
+        return latest, None
 
 
 def _run_state(project_root: str) -> dict:
@@ -129,14 +136,9 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
     evidence_dir = root / ".swarmflow" / "evidence"
     for path in sorted(evidence_dir.glob("*.txt")):
         lines.append(f"- evidence file: {path.relative_to(root)}")
-    compare_files = sorted(evidence_dir.glob("wave*.compare.json"),
-                           key=lambda item: item.stat().st_mtime)
-    if compare_files:
-        latest = compare_files[-1]
-        try:
-            comparison = json.loads(latest.read_text(encoding="utf-8"))
-        except ValueError:
-            comparison = {}
+    latest, comparison = latest_artifact(root, "wave*.compare.json")
+    if latest is not None:
+        comparison = comparison or {}
         lines.append(f"- latest comparison ({latest.name}): "
                      f"regressed={comparison.get('regressed')} "
                      f"indeterminate={comparison.get('indeterminate')}")
@@ -156,16 +158,11 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
     lines.append("")
 
     lines.append("## Discrimination (wave tests at the parent state)")
-    disc_files = sorted(evidence_dir.glob("wave*.discrimination.json"),
-                        key=lambda item: item.stat().st_mtime)
-    if not disc_files:
+    latest, check = latest_artifact(root, "wave*.discrimination.json")
+    if latest is None:
         lines.append("- (none recorded)")
     else:
-        latest = disc_files[-1]
-        try:
-            check = json.loads(latest.read_text(encoding="utf-8"))
-        except ValueError:
-            check = {}
+        check = check or {}
         if check.get("skipped"):
             lines.append(f"- skipped: {check['skipped']}")
         else:
@@ -191,16 +188,11 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
     lines.append("")
 
     lines.append("## Processes (post-wave sweep)")
-    sweep_files = sorted(evidence_dir.glob("wave*.sweep.json"),
-                         key=lambda item: item.stat().st_mtime)
-    if not sweep_files:
+    latest, sweep_check = latest_artifact(root, "wave*.sweep.json")
+    if latest is None:
         lines.append("- (none recorded)")
     else:
-        latest = sweep_files[-1]
-        try:
-            sweep_check = json.loads(latest.read_text(encoding="utf-8"))
-        except ValueError:
-            sweep_check = {}
+        sweep_check = sweep_check or {}
         if sweep_check.get("skipped"):
             lines.append(f"- skipped: {sweep_check['skipped']}")
         elif sweep_check.get("indeterminate"):
@@ -212,11 +204,11 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
                          f"killed={counts.get('killed', 0)} "
                          f"mode={sweep_check.get('mode', 'warn')}")
             for record in sweep_check.get("orphans") or []:
-                ports = ", ".join(str(port) for port in record["ports"]) or "-"
+                ports = format_ports(record["ports"])
                 lines.append(f"  - leaked: pid {record['pid']} {record['name']} "
                              f"(ports: {ports}) `{record['cmd'][:120]}`")
             for record in sweep_check.get("pre_existing") or []:
-                ports = ", ".join(str(port) for port in record["ports"]) or "-"
+                ports = format_ports(record["ports"])
                 lines.append(f"  - pre-existing listener (untouched): pid {record['pid']} "
                              f"{record['name']} (ports: {ports})")
     lines.append("")
@@ -224,11 +216,12 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
     lines.append("## Git diff vs base")
     base = state.get("base_sha", "")
     if base:
-        _, stat = _git(str(root), "diff", "--stat", base)
+        _, stat = git(str(root), "diff", "--stat", base, strip=False, include_stderr=True)
         lines.append(stat.strip() or "(no diff)")
         paths = list((recon.get("tests") or {}).get("files") or []) + MANIFEST_PATHS
         if paths:
-            _, diff = _git(str(root), "diff", base, "--", *paths)
+            _, diff = git(str(root), "diff", base, "--", *paths, strip=False,
+                          include_stderr=True)
             if diff.strip():
                 lines.append("")
                 lines.append("### Sensitive paths diff (tests + manifests)")

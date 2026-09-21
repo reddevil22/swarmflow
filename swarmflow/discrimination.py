@@ -13,7 +13,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .audit import _git, _hash_file
+from .audit import _hash_file
+from .gitutil import git
 from .recon import TEST_PATTERNS
 from .regression import run_regression
 
@@ -199,7 +200,7 @@ def _remove_tree(wt: Path, project_root: Path, linked: list) -> list:
             problems.append(name)
     if not problems and wt.exists():
         shutil.rmtree(wt)
-    _git(project_root, "worktree", "prune")
+    git(project_root, "worktree", "prune")
     return problems
 
 
@@ -221,7 +222,7 @@ def run_check(project_root: str, wave: int, tasks: list, config: dict,
 
     on_disk = [rel for rel in owned
                if (project / rel).is_file() and _is_test_shaped(rel) and not excluded(rel)]
-    ok, listing = _git(project, "ls-tree", "-r", "--name-only", base_sha)
+    ok, listing = git(project, "ls-tree", "-r", "--name-only", base_sha)
     at_base = {line.strip() for line in listing.splitlines() if line.strip()} if ok else set()
     deleted = sorted(rel for rel in owned
                      if _is_test_shaped(rel) and rel in at_base
@@ -242,14 +243,14 @@ def run_check(project_root: str, wave: int, tasks: list, config: dict,
 
     wt = project / ".swarmflow" / "discrimination" / f"wt-wave{wave}"
     notes = []
-    _git(project, "worktree", "prune")
+    git(project, "worktree", "prune")
     linked_names = settings.get("link_dirs") or []
     if wt.exists():
         leftovers = _remove_tree(wt, project, linked_names)
         notes.append("removed a leftover worktree from a previous run"
                      if not leftovers else f"leftover worktree not fully removed: {leftovers}")
     wt.parent.mkdir(parents=True, exist_ok=True)
-    ok, output = _git(project, "worktree", "add", "--detach", str(wt), base_sha)
+    ok, output = git(project, "worktree", "add", "--detach", str(wt), base_sha)
     if not ok:
         return {"version": 1, "wave": wave, "indeterminate": True,
                 "reason": f"worktree add failed: {output.strip()[:300]}",

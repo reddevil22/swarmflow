@@ -58,6 +58,16 @@ def save_run(project_root, data: dict) -> None:
     _write_atomic(store_dir(project_root) / "run.json", data)
 
 
+def persist_run(project_root, data: dict, mirror: bool = False) -> dict:
+    """Save the run state, optionally refreshing the project-side mirror.
+
+    One place knows about the mirror so no caller has to remember the pair."""
+    save_run(project_root, data)
+    if mirror:
+        write_mirror(project_root, data)
+    return data
+
+
 def load_frozen(project_root):
     data = _read_json(store_dir(project_root) / "frozen.json")
     return data if isinstance(data, dict) else None

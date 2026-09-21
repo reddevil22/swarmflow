@@ -7,10 +7,11 @@ carries an evidence string so nothing is guessed silently.
 
 import json
 import os
-import subprocess
 import time
 from collections import Counter
 from pathlib import Path
+
+from .gitutil import git
 
 ARTIFACT_DIRS = {
     ".git", "node_modules", ".venv", "venv", "target", "dist", "build", "coverage",
@@ -39,13 +40,8 @@ DIGEST_LIMIT = 6000
 
 
 def _git(project_root: Path, *args: str, timeout: int = 30):
-    try:
-        proc = subprocess.run(["git", *args], cwd=str(project_root), capture_output=True,
-                              text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout)
-        return proc.returncode == 0, (proc.stdout or "").strip()
-    except (OSError, subprocess.TimeoutExpired):
-        return False, ""
+    """Recon-level git with its own shorter timeout; see ``gitutil.git``."""
+    return git(project_root, *args, timeout=timeout)
 
 
 MAX_UNTRACKED = 2000
