@@ -6,7 +6,7 @@ import json
 import pytest
 import yaml
 
-from swarmflow import cli, runstate
+from swarmflow import cli, pipeline, runstate
 from swarmflow.frontier import FrontierError
 from swarmflow.ledger import Ledger
 from swarmflow.roles import (RoleError, _extract_json, _gate_summary, accept_run,
@@ -468,7 +468,7 @@ def test_wave_run_verify_stage(tmp_path, monkeypatch):
     config = _config(tmp_path)
     _, plan_path = _wave_setup(tmp_path)
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
     _patch(monkeypatch, FakeBackend(
         _verdict("pass"),
         json.dumps({"task_id": "T2", "verdict": "needs_fix", "findings": [],
@@ -486,7 +486,7 @@ def test_wave_run_verify_is_opt_in(tmp_path, monkeypatch):
     config = _config(tmp_path)
     _, plan_path = _wave_setup(tmp_path)
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
     backend = _patch(monkeypatch, FakeBackend())
 
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
@@ -497,8 +497,8 @@ def test_wave_run_verify_skipped_when_gates_fail(tmp_path, monkeypatch):
     config = _config(tmp_path)
     _, plan_path = _wave_setup(tmp_path)
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
-    monkeypatch.setattr(cli, "_run_audit", lambda *args, **kwargs: ("fail", None))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "run_audit", lambda *args, **kwargs: ("fail", None))
     backend = _patch(monkeypatch, FakeBackend())
 
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1",

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from swarmflow import cli
+from swarmflow import cli, pipeline
 from swarmflow.discrimination import (_probe_interpreter, _probe_packages,
                                       _python_prepare, run_check)
 from swarmflow.ledger import Ledger
@@ -265,9 +265,9 @@ def test_unattributable_parent_is_fail_closed_under_enforce(tmp_path, monkeypatc
               "unattributable_files": ["tests/x.test.ts"], "counts": {}, "files": []}
     monkeypatch.setattr("swarmflow.discrimination.run_check", lambda *a, **k: canned)
 
-    warn_state, _ = cli._run_discrimination(
+    warn_state, _ = pipeline.run_discrimination(
         str(project), 1, [{"id": "T1"}], {"discrimination": {"mode": "warn"}}, ledger, {})
-    enforce_state, _ = cli._run_discrimination(
+    enforce_state, _ = pipeline.run_discrimination(
         str(project), 1, [{"id": "T1"}], {"discrimination": {"mode": "enforce"}}, ledger,
         {})
     ledger.close()

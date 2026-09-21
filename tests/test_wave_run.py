@@ -8,7 +8,7 @@ import time
 import pytest
 import yaml
 
-from swarmflow import cli, procs, runstate
+from swarmflow import cli, pipeline, procs, runstate
 from swarmflow.ledger import Ledger
 
 
@@ -71,7 +71,7 @@ def test_wave_run_regression_gate_and_skip(tmp_path, monkeypatch):
     plan = _greenfield_plan(tmp_path, project, ["T1"])
 
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
 
     # wave 1: baseline recorded (green), regression re-run (green) -> rc 0
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
@@ -120,7 +120,7 @@ def test_wave_run_detects_changed_failing_test(tmp_path, monkeypatch):
     project = tmp_path / "app"
     config = _config(tmp_path, regression_command=_red_script(
         tmp_path, "tests/test_a.py::test_one"))
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
 
     plan = _greenfield_plan(tmp_path, project, ["T1"])
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
@@ -151,7 +151,7 @@ def test_wave_run_detects_suite_shrink_while_green(tmp_path, monkeypatch):
     check = tmp_path / "check.py"
     check.write_text("print('5 passed in 0.10s')\n", encoding="utf-8")
     config = _config(tmp_path, regression_command=f'"{sys.executable}" "{check}"')
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
 
     plan = _greenfield_plan(tmp_path, project, ["T1"])
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
@@ -172,7 +172,7 @@ def test_wave_run_rebaseline_re_records_and_skips_comparison(tmp_path, monkeypat
     project = tmp_path / "app"
     config = _config(tmp_path, regression_command=_red_script(
         tmp_path, "tests/test_a.py::test_one"))
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
 
     plan = _greenfield_plan(tmp_path, project, ["T1"])
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
@@ -221,7 +221,7 @@ def test_brownfield_wave_run_reports_discrimination(tmp_path, monkeypatch):
     config = _config(tmp_path)
 
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
 
     # warn mode (default): the vacuous test is recorded as evidence, the wave passes
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
@@ -370,7 +370,7 @@ def test_brownfield_wave_run_sweeps_leaked_processes(tmp_path, monkeypatch):
             leak()
             return results
 
-    monkeypatch.setattr(cli, "_runner",
+    monkeypatch.setattr(pipeline, "_runner",
                         lambda config, ledger, root: LeakyRunner(ledger))
     try:
         assert cli.main(["--config", str(config), "plan-load",
@@ -435,7 +435,7 @@ def test_recon_rewrite_cannot_change_the_gate_command(tmp_path, monkeypatch, cap
                        "spec": "do", "wave": 1}]}
     plan_path = tmp_path / "plan.yaml"
     plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
 
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
@@ -477,7 +477,7 @@ def test_config_override_wins_over_the_frozen_command(tmp_path, monkeypatch, cap
                        "spec": "do", "wave": 1}]}
     plan_path = tmp_path / "plan.yaml"
     plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
 
@@ -505,8 +505,8 @@ def test_missing_store_baseline_fails_a_brownfield_audit(tmp_path):
     project.mkdir()
     runstate.save_run(str(project), {"mode": "brownfield"})
     ledger = Ledger(str(tmp_path / "ledger.db"))
-    state, result = cli._run_audit(str(project), ledger, "T1", brownfield=True)
-    skipped, _ = cli._run_audit(str(project), ledger, "T1", brownfield=False)
+    state, result = pipeline.run_audit(str(project), ledger, "T1", brownfield=True)
+    skipped, _ = pipeline.run_audit(str(project), ledger, "T1", brownfield=False)
     ledger.close()
     assert state == "fail"
     assert result["violations"][0]["kind"] == "no_baseline"
@@ -548,7 +548,7 @@ def test_project_side_state_cannot_forge_the_audit(tmp_path, monkeypatch):
                        "owner_files": ["tracked.py"], "spec": "do", "wave": 1}]}
     plan_path = tmp_path / "plan.yaml"
     plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
 
@@ -570,7 +570,7 @@ def test_project_side_state_cannot_forge_the_audit(tmp_path, monkeypatch):
                                 "server_launches": []})
             return results
 
-    monkeypatch.setattr(cli, "_runner",
+    monkeypatch.setattr(pipeline, "_runner",
                         lambda config, ledger, root: ForgingRunner(ledger))
     ledger = Ledger(str(tmp_path / "ledger.db"))
     ledger.add_task("T2", str(repo), wave=2)
@@ -615,7 +615,7 @@ def test_between_wave_edit_of_a_frozen_file_stays_visible(tmp_path, monkeypatch,
     repo = _brownfield_repo(tmp_path, {"frozen.py": "x = 1\n"})
     config = _config(tmp_path)
     plan_path = _brownfield_plan(tmp_path, repo)
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
 
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
@@ -640,7 +640,7 @@ def test_missing_frozen_baseline_refuses_the_wave(tmp_path, monkeypatch, capsys)
     repo = _brownfield_repo(tmp_path, {"frozen.py": "x = 1\n"})
     config = _config(tmp_path)
     plan_path = _brownfield_plan(tmp_path, repo)
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
 
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
@@ -661,7 +661,7 @@ def test_preexisting_untracked_files_do_not_fail_the_wave(tmp_path, monkeypatch,
     (repo / "notes.md").write_text("pre-existing operator note", encoding="utf-8")
     config = _config(tmp_path)
     plan_path = _brownfield_plan(tmp_path, repo)
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
 
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
     assert "exempt from the scope audit" in capsys.readouterr().out
@@ -689,7 +689,7 @@ def test_new_untracked_file_during_the_wave_still_fails(tmp_path, monkeypatch):
                                 "server_launches": []})
             return results
 
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: StrayRunner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: StrayRunner(ledger))
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
 
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 1
@@ -731,7 +731,7 @@ def test_wave_created_files_are_sealed_for_the_next_wave(tmp_path, monkeypatch):
     plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
 
     runner = _writing_runner(repo, "created by the wave\n")
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: runner(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: runner(ledger))
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
     assert "feature.py" in runstate.load_frozen(str(repo.resolve()))["files"]
@@ -754,12 +754,12 @@ def test_unowned_edit_of_a_sealed_file_fails_the_next_wave(tmp_path, monkeypatch
     plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
 
     creator = _writing_runner(repo, "created by the wave\n")
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: creator(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: creator(ledger))
     assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
 
     tamperer = _writing_runner(repo, "tampered by an unowned task\n")
-    monkeypatch.setattr(cli, "_runner", lambda config, ledger, root: tamperer(ledger))
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: tamperer(ledger))
     ledger = Ledger(str(tmp_path / "ledger.db"))
     ledger.add_task("T2", str(repo), wave=2, owner_files=["other.py"])
     ledger.close()
