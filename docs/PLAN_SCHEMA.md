@@ -49,6 +49,10 @@ the delivery against both the spec and the original request.
    non-empty, project-relative, and free of `..` segments and drive prefixes.
 7. `thinking` must be one of the levels above; `acceptance` must be a list of strings;
    `module` must be a string.
+8. `test_command`s must be unique within a wave: two same-wave tasks verifying with the
+   same command are a parallelism smell (usually one change split into "implement" plus
+   "its tests", where the second fails until the first lands). The plan is rejected with
+   guidance to merge the tasks or move the dependent one to a later wave.
 
 ## Example
 See `examples/smoke-plan.yaml` for a minimal two-task plan and `docs/CASE_STUDY.md`

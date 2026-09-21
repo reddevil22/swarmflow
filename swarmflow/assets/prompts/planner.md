@@ -46,6 +46,15 @@ agents. Respond with ONLY a JSON object - no markdown fences, no commentary.
    include `test_command`: one exact runnable command that verifies the task, so workers
    never have to discover test setups themselves.
 7. Scope discipline: cut the PRD down to a true MVP-1; put the rest in mvp_scope.out.
+8. A wave is a parallelism claim: tasks in the same wave must be INDEPENDENT. Never split
+   one change into "implement X" plus "write tests for X" - give that change to a single
+   task that owns both files. If a task's tests exercise files another task owns, put it
+   in a later wave. `test_command`s must be unique within a wave (the validator rejects
+   duplicates) and each should be scoped to the task's own files.
+9. `acceptance_criteria` must repeat every exact requirement the PRD states - message
+   wording, ordering, precedence, edge cases - one entry each with a runnable `check`.
+   Vague criteria ("tests pass") hide gaps: an operator or the acceptance pass can only
+   verify what a criterion names.
 
 ## Mode: greenfield vs brownfield
 

@@ -11,6 +11,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (3.13), and a packaging job builds the wheel, installs it into a clean environment and
   smokes `swarmflow init` + `status --json` outside the source tree.
 - **`docs/EXECUTIVE_SUMMARY.md`** (linked from the README, with the independent review).
+- **Plan-shape rule: same-wave tasks must be independent.** `validate_plan` now rejects two
+  tasks in one wave that share a `test_command` (the recurring "implement X" + "write X's
+  tests" split, which races: the second task's tests fail until the first lands). The
+  planner prompt states the rule and asks for unique, scoped commands per wave; the retry
+  feedback carries the message, and the acceptance-criteria guidance now requires one
+  checkable entry per exact PRD requirement (message wording, ordering, precedence).
 
 ### Changed
 - **The package is installable**: shipped assets (planner/verifier/acceptance prompts,

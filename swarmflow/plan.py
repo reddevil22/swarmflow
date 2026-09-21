@@ -44,6 +44,7 @@ def validate_plan(plan: dict) -> list[str]:
         errors.append(f"project_name must match {ID_RE.pattern} (it names the run branch)")
     seen_ids = set()
     owner_map: dict[str, str] = {}
+    wave_commands: dict[tuple, str] = {}
     for task in tasks:
         task_id = task.get("id", "<missing id>")
         missing = REQUIRED_TASK_KEYS - set(task)
@@ -57,6 +58,20 @@ def validate_plan(plan: dict) -> list[str]:
         seen_ids.add(task_id)
         if "test_command" in task and not isinstance(task["test_command"], str):
             errors.append(f"{task_id}: test_command must be a string")
+        else:
+            # a wave is a parallelism claim: two tasks verifying with the same command are
+            # usually one change split in two (the second fails until the first lands)
+            command = (task.get("test_command") or "").strip()
+            if command:
+                wave = task.get("wave", 1)
+                key = (str(wave), command)
+                if key in wave_commands:
+                    errors.append(
+                        f"{task_id}: test_command duplicates {wave_commands[key]} in wave "
+                        f"{wave}; tasks in one wave must be independent - merge them into "
+                        "one task or move the dependent task to a later wave")
+                else:
+                    wave_commands[key] = task_id
         thinking = task.get("thinking")
         if thinking is not None and thinking not in THINKING_LEVELS:
             errors.append(f"{task_id}: thinking must be one of {sorted(THINKING_LEVELS)}")
