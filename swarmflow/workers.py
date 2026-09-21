@@ -50,11 +50,10 @@ def _last_float(line: str) -> float:
 
 
 class WorkerRunner:
-    def __init__(self, config: dict, ledger, project_root: str, repo_root: Path):
+    def __init__(self, config: dict, ledger, project_root: str):
         self.config = config
         self.ledger = ledger
         self.project_root = Path(project_root)
-        self.repo_root = Path(repo_root)
         self.logs_dir = self.project_root / config["paths"]["logs_dir"]
         self.logs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -212,7 +211,7 @@ class WorkerRunner:
 
     def build_prompt(self, task: dict, attempt_context: str = "",
                      fix_context: str = "") -> str:
-        return render_brief(self.repo_root, self.project_root, task, attempt_context,
+        return render_brief(self.project_root, task, attempt_context,
                             fix_context_text=fix_context)
 
     def _fail_spawn(self, task_id: str, error, handle: dict | None = None) -> None:

@@ -12,7 +12,7 @@ def test_example_config_loads_and_merges_defaults(tmp_path):
     config = load_config(str(EXAMPLE_CONFIG_PATH))
     assert config["frontier"]["model"] == "deepseek/deepseek-v4-flash"
     assert config["worker"]["max_turns"] == 45
-    assert config["paths"]["ledger"] == "state/ledger.db"
+    assert config["paths"]["ledger"] == ""      # resolved to the user state dir later
 
 
 def test_partial_config_merges_with_defaults(tmp_path):

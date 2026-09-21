@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import runstate
 from .audit import audit
-from .config import REPO_ROOT
+from .config import asset
 from .evidence import bundle, clip, latest_artifact
 from .frontier import build_backend
 from .plan import validate_plan
@@ -71,7 +71,7 @@ def _block(text: str, limit: int = MAX_BLOCK) -> str:
 
 def _compose(role_file: str, sections: list) -> str:
     """Compose a role prompt. Sections are (title, text, trusted[, limit]) tuples."""
-    prompt = (REPO_ROOT / "prompts" / role_file).read_text(encoding="utf-8")
+    prompt = asset("prompts", role_file).read_text(encoding="utf-8")
     parts = [prompt, "", TRUST_NOTE, ""]
     for section in sections:
         title, text, trusted = section[0], section[1], section[2]

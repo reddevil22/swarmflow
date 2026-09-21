@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from .audit import _hash_file
+from .config import asset
 from .recon import load_recon
 from . import runstate
 
@@ -144,10 +145,10 @@ def fix_context(project_root, task: dict) -> str:
     return ""
 
 
-def render_brief(repo_root: Path, project_root: Path, task: dict,
+def render_brief(project_root: Path, task: dict,
                  attempt_context: str = "", fix_context_text: str = "") -> str:
     """Fill the task-brief template for one dispatch."""
-    template = (Path(repo_root) / "prompts" / "task_brief.md").read_text(encoding="utf-8")
+    template = asset("prompts", "task_brief.md").read_text(encoding="utf-8")
     run_state = runstate.load_run(str(project_root))
     recon = load_recon(str(project_root))
     brownfield = run_state.get("mode") == "brownfield"
@@ -165,7 +166,7 @@ def render_brief(repo_root: Path, project_root: Path, task: dict,
     files_to_read = task.get("files_to_read") or owner_files
     stacks = [entry.get("stack", "") for entry in (recon.get("stacks") or [])]
     if brownfield:
-        rules_text = (Path(repo_root) / "AGENTS.worker.md").read_text(encoding="utf-8")
+        rules_text = asset("AGENTS.worker.md").read_text(encoding="utf-8")
         worker_rules = "\n## WORKING RULES (mandatory)\n\n" + rules_text.strip() + "\n"
         conventions = recon.get("conventions") or []
         if conventions:

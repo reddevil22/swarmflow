@@ -5,7 +5,6 @@ from pathlib import Path
 
 from swarmflow.audit import _hash_file
 from swarmflow import runstate
-from swarmflow.config import REPO_ROOT
 from swarmflow.ledger import Ledger
 from swarmflow.prompt import (delivery_changed, fix_context, latest_verdict,
                               stack_rules_block)
@@ -15,7 +14,7 @@ from swarmflow.workers import WorkerRunner
 def _runner(tmp_path, project):
     ledger = Ledger(str(tmp_path / "l.db"))
     runner = WorkerRunner({"worker": {}, "paths": {"logs_dir": "logs"}, "swarm": {}},
-                          ledger, str(project), REPO_ROOT)
+                          ledger, str(project))
     return runner, ledger
 
 
@@ -176,7 +175,7 @@ def test_inline_sessions_do_not_touch_the_ledger(tmp_path, monkeypatch):
               "paths": {"logs_dir": "logs"},
               "swarm": {"concurrency": 1, "stagger_s": 0.0}}
     ledger = Ledger(str(tmp_path / "l.db"))
-    runner = WorkerRunner(config, ledger, str(project), REPO_ROOT)
+    runner = WorkerRunner(config, ledger, str(project))
 
     class Proc:
         pid = 1
@@ -210,7 +209,7 @@ def test_dispatch_injects_findings_from_attempt_two(tmp_path, monkeypatch):
               "swarm": {"concurrency": 1, "stagger_s": 0.0, "metrics_url": "",
                         "backpressure_waiting": 0, "backpressure_kv": 0.0}}
     ledger = Ledger(str(tmp_path / "l.db"))
-    runner = WorkerRunner(config, ledger, str(project), REPO_ROOT)
+    runner = WorkerRunner(config, ledger, str(project))
     captured = {}
 
     class Proc:

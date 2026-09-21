@@ -16,7 +16,8 @@ from pathlib import Path
 import yaml
 
 from .audit import audit, freeze
-from .config import DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, REPO_ROOT, load_config
+from .config import (DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH,
+                     LEGACY_CONFIG_PATH, load_config, resolve_paths)
 from .frontier import FrontierError, build_backend
 from .ledger import Ledger
 from .trace import scan_trace
@@ -29,13 +30,16 @@ def _frontier(config) -> object:
 
 
 def _runner(config, ledger, project_root: str) -> WorkerRunner:
-    return WorkerRunner(config, ledger, project_root, REPO_ROOT)
+    return WorkerRunner(config, ledger, project_root)
 
 
 def cmd_init(args) -> int:
-    if DEFAULT_CONFIG_PATH.exists():
-        print(f"config already exists: {DEFAULT_CONFIG_PATH}")
+    existing = DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.exists() else (
+        LEGACY_CONFIG_PATH if LEGACY_CONFIG_PATH.exists() else None)
+    if existing:
+        print(f"config already exists: {existing}")
         return 0
+    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(EXAMPLE_CONFIG_PATH, DEFAULT_CONFIG_PATH)
     print(f"wrote {DEFAULT_CONFIG_PATH}")
     print("edit worker.model (your local model id) and any CLI paths, then run:")
@@ -110,7 +114,7 @@ def cmd_recon(args, config) -> int:
 
 def cmd_evidence(args, config) -> int:
     from .evidence import write_bundle
-    ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
+    ledger = Ledger(config["paths"]["ledger"])
     path = write_bundle(str(Path(args.project).resolve()), ledger,
                         ignores=config["audit"]["ignore_extra"])
     ledger.close()
@@ -179,7 +183,7 @@ def cmd_plan(args, config) -> int:
 def cmd_verify(args, config) -> int:
     """Frontier verification of one task against its spec."""
     from .roles import RoleError, verify_task
-    with Ledger(str(REPO_ROOT / config["paths"]["ledger"])) as ledger:
+    with Ledger(config["paths"]["ledger"]) as ledger:
         task = ledger.get(args.task)
         if not task:
             print(f"unknown task: {args.task}")
@@ -208,7 +212,7 @@ def cmd_verify(args, config) -> int:
 def cmd_retry(args, config) -> int:
     """Re-queue a needs_fix/failed task; the next dispatch injects the findings."""
     from .prompt import latest_verdict, worker_outcome
-    with Ledger(str(REPO_ROOT / config["paths"]["ledger"])) as ledger:
+    with Ledger(config["paths"]["ledger"]) as ledger:
         task = ledger.get(args.task)
         if not task:
             print(f"unknown task: {args.task}")
@@ -252,7 +256,7 @@ def cmd_retry(args, config) -> int:
 def cmd_accept(args, config) -> int:
     """Frontier acceptance over the frozen criteria and the evidence bundle."""
     from .roles import RoleError, accept_run
-    with Ledger(str(REPO_ROOT / config["paths"]["ledger"])) as ledger:
+    with Ledger(config["paths"]["ledger"]) as ledger:
         try:
             result = accept_run(config, str(Path(args.project).resolve()), ledger)
         except RoleError as exc:
@@ -277,7 +281,7 @@ def cmd_accept(args, config) -> int:
 
 
 def cmd_wave_run(args, config) -> int:
-    with Ledger(str(REPO_ROOT / config["paths"]["ledger"])) as ledger:
+    with Ledger(config["paths"]["ledger"]) as ledger:
         rc, _ = pipeline.run_wave(
             ledger, config, wave=args.wave, concurrency=args.concurrency,
             verify=getattr(args, "verify", False), skip_regression=args.skip_regression,
@@ -286,7 +290,7 @@ def cmd_wave_run(args, config) -> int:
 
 
 def cmd_status(args, config) -> int:
-    ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
+    ledger = Ledger(config["paths"]["ledger"])
     counts = ledger.counts()
     tasks = ledger.list_tasks()
     ledger.close()
@@ -301,7 +305,7 @@ def cmd_status(args, config) -> int:
 
 
 def cmd_freeze(args, config) -> int:
-    ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
+    ledger = Ledger(config["paths"]["ledger"])
     project_root = str(Path(args.project).resolve())
     tasks = [task for task in ledger.list_tasks() if task["project"] == project_root]
     ledger.close()
@@ -459,11 +463,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "init":
         return cmd_init(args)
-    config = load_config(args.config)
-    state_dir = Path(str(config["paths"].get("state_dir") or "state"))
-    if not state_dir.is_absolute():
-        state_dir = REPO_ROOT / state_dir
-    runstate.set_state_root(state_dir)
+    config = resolve_paths(load_config(args.config))
+    runstate.set_state_root(config["paths"]["state_dir"])
     return args.func(args, config)
 
 

@@ -124,6 +124,7 @@ def test_smoke_worker_json_reports_the_error(tmp_path, capsys):
 def test_init_writes_the_config(tmp_path, monkeypatch, capsys):
     target = tmp_path / "swarmflow.yaml"
     monkeypatch.setattr(cli, "DEFAULT_CONFIG_PATH", target)
+    monkeypatch.setattr(cli, "LEGACY_CONFIG_PATH", tmp_path / "absent.yaml")
     assert cli.main(["init"]) == 0
     assert target.exists()
     assert "paths" in target.read_text(encoding="utf-8")

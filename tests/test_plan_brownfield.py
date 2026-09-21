@@ -7,7 +7,6 @@ import pytest
 import yaml
 
 from swarmflow import cli, runstate
-from swarmflow.config import REPO_ROOT
 from swarmflow.plan import scaffold, validate_plan
 
 
@@ -68,7 +67,7 @@ def test_files_to_read_must_be_string_list():
 
 def test_scaffold_greenfield_unchanged_shape(tmp_path):
     plan = {"project_name": "g", "tasks": [_task()]}
-    info = scaffold(plan, tmp_path / "green", REPO_ROOT, mode="greenfield")
+    info = scaffold(plan, tmp_path / "green", mode="greenfield")
     assert (tmp_path / "green" / "AGENTS.md").exists()
     assert (tmp_path / "green" / "SPEC.md").exists()
     assert (tmp_path / "green" / "specs" / "T1.md").exists()
@@ -80,7 +79,7 @@ def test_scaffold_brownfield_never_touches_user_files(tmp_path):
     project.mkdir()
     (project / "AGENTS.md").write_text("MY RULES\n", encoding="utf-8")
     plan = {"project_name": "b", "tasks": [_task()]}
-    info = scaffold(plan, project, REPO_ROOT, mode="brownfield")
+    info = scaffold(plan, project, mode="brownfield")
     assert (project / "AGENTS.md").read_text(encoding="utf-8") == "MY RULES\n"
     assert not (project / "SPEC.md").exists()
     assert (project / ".swarmflow" / "SPEC.md").exists()

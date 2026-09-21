@@ -12,7 +12,6 @@ from pathlib import Path
 
 from . import runstate, sweep as sweep_mod
 from .audit import audit, freeze, seal
-from .config import REPO_ROOT
 from .frontier import FrontierError
 from .ledger import Ledger
 from .plan import enqueue_plan, load_plan, scaffold, validate_plan
@@ -24,7 +23,7 @@ from .workers import WaveAborted, WorkerRunner
 
 def _runner(config, ledger, project_root: str) -> WorkerRunner:
     """Worker-runner factory: the seam tests and alternate front-ends replace."""
-    return WorkerRunner(config, ledger, project_root, REPO_ROOT)
+    return WorkerRunner(config, ledger, project_root)
 
 
 def recon_regression_command(project_root: str) -> str:
@@ -126,7 +125,7 @@ def plan_load(plan_path: str, project: str | None, config, allow_dirty: bool = F
                                   kill_stale, config)
         if rc:
             return rc
-    info = scaffold(plan, project_root, REPO_ROOT, mode=mode)
+    info = scaffold(plan, project_root, mode=mode)
     if mode != "brownfield":
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
         data = runstate.load_run(str(project_root))
@@ -140,7 +139,7 @@ def plan_load(plan_path: str, project: str | None, config, allow_dirty: bool = F
             data.setdefault("regression_source",
                             "config override" if override else "recon")
         runstate.persist_run(str(project_root), data, mirror=True)
-    ledger = Ledger(str(REPO_ROOT / config["paths"]["ledger"]))
+    ledger = Ledger(config["paths"]["ledger"])
     counts = enqueue_plan(ledger, plan, project_root, info["spec_paths"])
     ledger.close()
     if json_output:

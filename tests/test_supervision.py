@@ -10,7 +10,6 @@ import time
 import pytest
 
 from swarmflow import procs
-from swarmflow.config import REPO_ROOT
 from swarmflow.ledger import Ledger
 from swarmflow.workers import WaveAborted, WorkerRunner
 
@@ -55,7 +54,7 @@ def _runner(tmp_path, config, task_ids):
     ledger = Ledger(str(tmp_path / "l.db"))
     for task_id in task_ids:
         ledger.add_task(task_id, str(project), wave=1, owner_files=[])
-    runner = WorkerRunner(config, ledger, str(project), REPO_ROOT)
+    runner = WorkerRunner(config, ledger, str(project))
     return runner, ledger
 
 

@@ -10,9 +10,9 @@ import json
 import os
 from pathlib import Path
 
-from .config import REPO_ROOT
+from .resources import state_root as default_state_root
 
-_STATE_ROOT = REPO_ROOT / "state"
+_STATE_ROOT = default_state_root()
 LEGACY_KEYS = ("project", "mode", "branch", "base_sha", "created_at")
 
 

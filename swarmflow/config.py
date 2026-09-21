@@ -7,9 +7,12 @@ from pathlib import Path
 
 import yaml
 
+from .resources import asset, state_root, user_config_path
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "swarmflow.yaml"
-EXAMPLE_CONFIG_PATH = REPO_ROOT / "config" / "swarmflow.example.yaml"
+DEFAULT_CONFIG_PATH = user_config_path()
+LEGACY_CONFIG_PATH = REPO_ROOT / "config" / "swarmflow.yaml"
+EXAMPLE_CONFIG_PATH = asset("config", "swarmflow.example.yaml")
 
 DEFAULTS = {
     "frontier": {
@@ -49,8 +52,8 @@ DEFAULTS = {
     },
     "paths": {
         "logs_dir": "logs",
-        "ledger": "state/ledger.db",
-        "state_dir": "state",   # control-plane run store, relative to the repo root
+        "ledger": "",          # default: <state_dir>/ledger.db
+        "state_dir": "",       # control-plane run store; default: the user state dir
     },
     "audit": {
         "ignore_extra": [],
@@ -111,21 +114,46 @@ def _merge(base: dict, override: dict) -> dict:
 
 
 def resolve_config_path(path: str | None = None) -> Path:
-    """Resolve the config file: explicit path, $SWARMFLOW_CONFIG, or the default."""
+    """Resolve the config file: explicit path, $SWARMFLOW_CONFIG, user config, legacy.
+
+    The per-user path is what `swarmflow init` writes; a config left in a source
+    checkout's ``config/`` directory is still honoured so dev setups keep working.
+    """
     candidates = []
     if path:
         candidates.append(Path(path))
     elif os.environ.get("SWARMFLOW_CONFIG"):
         candidates.append(Path(os.environ["SWARMFLOW_CONFIG"]))
     else:
-        candidates.append(DEFAULT_CONFIG_PATH)
+        candidates.extend([DEFAULT_CONFIG_PATH, LEGACY_CONFIG_PATH])
     for candidate in candidates:
         if candidate.exists():
             return candidate
     raise FileNotFoundError(
         f"no swarmflow config found at {candidates[0]}; run `swarmflow init` or copy "
-        f"{EXAMPLE_CONFIG_PATH} to {DEFAULT_CONFIG_PATH}"
+        f"{EXAMPLE_CONFIG_PATH} there"
     )
+
+
+def resolve_paths(config: dict) -> dict:
+    """Make ``paths.state_dir`` and ``paths.ledger`` absolute, in place.
+
+    Empty values mean "the user state directory" - never the install directory, which
+    an installed CLI cannot write inside. An explicit relative path resolves against the
+    current working directory.
+    """
+    paths = config.setdefault("paths", {})
+    state_value = str(paths.get("state_dir") or "").strip()
+    state = Path(state_value).expanduser() if state_value else state_root()
+    if not state.is_absolute():
+        state = Path.cwd() / state
+    ledger_value = str(paths.get("ledger") or "").strip()
+    ledger = Path(ledger_value).expanduser() if ledger_value else state / "ledger.db"
+    if not ledger.is_absolute():
+        ledger = Path.cwd() / ledger
+    paths["state_dir"] = str(state)
+    paths["ledger"] = str(ledger)
+    return config
 
 
 SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9._/@:+-]{1,120}$")

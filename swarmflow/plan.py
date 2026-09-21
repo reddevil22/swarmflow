@@ -7,6 +7,8 @@ from pathlib import Path
 
 import yaml
 
+from .config import asset
+
 REQUIRED_TASK_KEYS = {"id", "module", "owner_files"}
 ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 THINKING_LEVELS = {"off", "minimal", "low", "medium", "high", "xhigh", "max"}
@@ -130,7 +132,7 @@ def render_spec_md(plan: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def scaffold(plan: dict, project_root: Path, repo_root: Path,
+def scaffold(plan: dict, project_root: Path,
              mode: str = "greenfield") -> dict:
     """Create the project skeleton for the given mode.
 
@@ -148,7 +150,7 @@ def scaffold(plan: dict, project_root: Path, repo_root: Path,
         spec_paths = write_specs(plan, artifacts / "specs")
         git_info = "existing" if (project_root / ".git").exists() else "missing"
     else:
-        shutil.copyfile(repo_root / "AGENTS.worker.md", project_root / "AGENTS.md")
+        shutil.copyfile(asset("AGENTS.worker.md"), project_root / "AGENTS.md")
         spec_md = project_root / "SPEC.md"
         spec_paths = write_specs(plan, project_root / "specs")
         git_info = "existing"

@@ -1,8 +1,7 @@
 # swarmflow configuration example
-# Copy to config/swarmflow.yaml (or run `swarmflow init`) and edit for your machine.
-# Values support ${ENV_VAR} expansion; local edits to config/swarmflow.yaml are
-# untracked by git. An alternative config path can be given with --config or the
-# SWARMFLOW_CONFIG environment variable.
+# Run `swarmflow init` to write the per-user config (or copy this file there) and edit
+# it for your machine. Values support ${ENV_VAR} expansion. An alternative config path
+# can be given with --config or the SWARMFLOW_CONFIG environment variable.
 # Note: model ids, thinking levels and .cmd/.bat executable paths are validated at
 # load time (no shell metacharacters; cmd.exe-routed paths may not contain spaces).
 
@@ -66,10 +65,12 @@ swarm:
 
 paths:
   logs_dir: "logs"        # traces, relative to the target project root
-  ledger: "state/ledger.db"
-  state_dir: "state"      # control-plane run store (outside any target project);
-                          # holds run.json + frozen.json per project - a worker cannot
-                          # reach it, unlike .swarmflow/ inside the project
+  # Control-plane state (the ledger plus run.json + frozen.json per project) must live
+  # outside any target project; an empty value means the per-user state directory
+  # (%LOCALAPPDATA%/swarmflow, $XDG_STATE_HOME/swarmflow, ~/Library/Application Support/
+  # swarmflow). SWARMFLOW_STATE_DIR overrides both.
+  ledger: ""
+  state_dir: ""
 
 audit:
   # Extra ignore patterns for the greenfield (walk-based) audit. Brownfield runs
