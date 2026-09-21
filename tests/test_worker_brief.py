@@ -7,8 +7,9 @@ from swarmflow.audit import _hash_file
 from swarmflow import runstate
 from swarmflow.config import REPO_ROOT
 from swarmflow.ledger import Ledger
-from swarmflow.workers import (WorkerRunner, delivery_changed, fix_context,
-                               latest_verdict, stack_rules_block)
+from swarmflow.prompt import (delivery_changed, fix_context, latest_verdict,
+                              stack_rules_block)
+from swarmflow.workers import WorkerRunner
 
 
 def _runner(tmp_path, project):

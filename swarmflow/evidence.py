@@ -11,8 +11,9 @@ from pathlib import Path
 from .audit import audit
 from .gitutil import git
 from .procs import format_ports
+from .prompt import latest_verdict
 from .recon import digest as recon_digest, load_recon
-from .workers import latest_verdict, scan_trace
+from .trace import scan_trace
 from . import runstate
 
 MANIFEST_PATHS = ["package.json", "package-lock.json", "pyproject.toml",

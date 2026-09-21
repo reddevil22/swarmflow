@@ -2,8 +2,7 @@
 
 import json
 
-from swarmflow.workers import (classify, scan_forbidden, scan_server_launches,
-                               scan_trace)
+from swarmflow.trace import classify, scan_forbidden, scan_server_launches, scan_trace
 
 CAP = 32768
 

@@ -16,8 +16,9 @@ from .config import REPO_ROOT
 from .evidence import bundle, clip, latest_artifact
 from .frontier import build_backend
 from .plan import validate_plan
+from .prompt import worker_outcome
 from .recon import digest as recon_digest, load_recon
-from .workers import scan_trace, worker_outcome
+from .trace import scan_trace
 
 MAX_BLOCK = 6000
 FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*$", re.MULTILINE)

@@ -19,7 +19,8 @@ from .audit import audit, freeze
 from .config import DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, REPO_ROOT, load_config
 from .frontier import FrontierError, build_backend
 from .ledger import Ledger
-from .workers import WorkerRunner, scan_trace
+from .trace import scan_trace
+from .workers import WorkerRunner
 from . import pipeline, runstate
 
 
@@ -206,7 +207,7 @@ def cmd_verify(args, config) -> int:
 
 def cmd_retry(args, config) -> int:
     """Re-queue a needs_fix/failed task; the next dispatch injects the findings."""
-    from .workers import latest_verdict, worker_outcome
+    from .prompt import latest_verdict, worker_outcome
     with Ledger(str(REPO_ROOT / config["paths"]["ledger"])) as ledger:
         task = ledger.get(args.task)
         if not task:
