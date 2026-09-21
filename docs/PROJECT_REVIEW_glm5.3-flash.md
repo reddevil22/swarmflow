@@ -129,7 +129,7 @@ An unusually disciplined alpha. The deterministic control plane matches its docu
 `plan.branch_ensure` interpolates `plan.project_name` into a branch name (argv-list git, prefix prevents `-`-leading names — OK); `discrimination._link_dir` passes project paths through `cmd /c mklink /J` — paths containing cmd metacharacters would be re-parsed. Validate ids/names/paths in `validate_plan`; prefer junction creation without `cmd /c`.
 
 ### F4 [medium] — No charset/path validation of task ids and `owner_files`
-`plan.validate_plan` never checks id format or containment. An id like `..\..\Users\redde\evil` writes specs/logs outside the project (`plan.write_specs`, `workers._spawn`); `scaffold` mkdirs every `owner_files` parent; `owner_files` entries are echoed into the worker prompt as "FILES YOU OWN."
+`plan.validate_plan` never checks id format or containment. An id like `..\..\Users\public\evil` writes specs/logs outside the project (`plan.write_specs`, `workers._spawn`); `scaffold` mkdirs every `owner_files` parent; `owner_files` entries are echoed into the worker prompt as "FILES YOU OWN."
 **Fix:** require `id` to match `^[A-Za-z0-9._-]+$` (reject `..`) and require `owner_files`/`files_to_read` entries to be relative and resolve strictly inside the project root.
 
 ### F5 [high] — Frozen-file audit can be silently defeated

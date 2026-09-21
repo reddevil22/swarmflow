@@ -1,6 +1,6 @@
 # Wave-4 fix plan: pin the invalid-done error contract, strengthen filter assertions.
 project_name: taskdock-mvp2
-project: C:\Users\redde\taskdock-pilot
+project: /path/to/target-repo
 mode: brownfield
 tasks:
   - id: filter-error-contract

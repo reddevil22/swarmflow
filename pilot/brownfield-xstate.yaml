@@ -1,6 +1,6 @@
 # Brownfield validation run 2: xstate-orchestration-demo (React/XState demo).
 project_name: xstate-orch
-project: C:\Users\redde\xstate-orchestration-demo
+project: /path/to/target-repo
 mode: brownfield
 tasks:
   - id: act-repair

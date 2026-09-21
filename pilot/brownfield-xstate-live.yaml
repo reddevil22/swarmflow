@@ -1,6 +1,6 @@
 # Wave-3 fix plan: make BroadcastChannel history sync actually work live.
 project_name: xstate-orch
-project: C:\Users\redde\xstate-orchestration-demo
+project: /path/to/target-repo
 mode: brownfield
 tasks:
   - id: sync-live-fix

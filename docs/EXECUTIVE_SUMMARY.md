@@ -9,11 +9,11 @@ review the branch that comes out.
 ## Local inference: one server, many sessions
 
 The runs this summary counts on - the `sdlc-cli` change, the `prompt-scaler` run, and a
-scratch greenfield project - sent every AI call to a single local vLLM server
-(`192.168.1.79:8000`, model `qwen3.6-35b-a3b`): the planning call that turns requirements
-into tasks, the coding sessions that write the code, and the review calls that judge the
-result. (An earlier validation run, `TaskDock`, predates that setup: its plan came from a
-cloud model; only its four coding sessions ran locally.)
+scratch greenfield project - sent every AI call to a single local vLLM server (model
+`qwen3.6-35b-a3b`): the planning call that turns requirements into tasks, the coding
+sessions that write the code, and the review calls that judge the result. (An earlier
+validation run, `TaskDock`, predates that setup: its plan came from a cloud model; only
+its four coding sessions ran locally.)
 
 Coding agents run as long-lived sessions, several at once, and each session executes the
 project's real test suite while it works. The harness keeps this within what the machine

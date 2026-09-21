@@ -5,7 +5,7 @@
 | Role | Backed by | Responsibility |
 |---|---|---|
 | Planner / Verifier / Acceptator | a configured frontier backend (`frontier.py`: `openai` / `commandcode` / `cli` / `pi`), driven by `swarmflow/roles.py` | PRD decomposition, contract design, failure triage, verdicts, acceptance - invoked by `swarmflow plan` / `verify` / `accept` |
-| Worker | local Pi session -> vllm-79/qwen36 | implement one pinned task (module + tests + report) |
+| Worker | local Pi session -> local/qwen36 | implement one pinned task (module + tests + report) |
 | Control plane | `swarmflow` Python package | deterministic state machine: queue, dispatch, admission control, retries, artifact audits |
 | Human | run-branch review | the only human checkpoint for now: review the branch (no PR automation) |
 

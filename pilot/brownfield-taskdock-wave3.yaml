@@ -1,6 +1,6 @@
 # Wave-3 fix plan from the TaskDock brownfield verifier findings.
 project_name: taskdock-mvp2
-project: C:\Users\redde\taskdock-pilot
+project: /path/to/target-repo
 mode: brownfield
 tasks:
   - id: filter-http-tests

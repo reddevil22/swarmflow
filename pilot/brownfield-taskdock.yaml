@@ -1,6 +1,6 @@
 # Brownfield validation run: taskdock-mvp2 delta on an existing repo.
 project_name: taskdock-mvp2
-project: C:\Users\redde\taskdock-pilot
+project: /path/to/target-repo
 mode: brownfield
 tasks:
   - id: done-filter

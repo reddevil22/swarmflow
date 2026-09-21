@@ -76,11 +76,11 @@ def test_unsafe_values_are_rejected(tmp_path):
 
 def test_safe_values_pass(tmp_path):
     config = load_config(_write_config(tmp_path, {
-        "worker": {"model": "vllm-79/qwen36:latest"},
+        "worker": {"model": "local/qwen36:latest"},
         "frontier": {"effort": "high"},
         "discrimination": {"link_dirs": ["node_modules"]},
         "sweep": {"ignore_names": ["vite"]}}))
-    assert config["worker"]["model"] == "vllm-79/qwen36:latest"
+    assert config["worker"]["model"] == "local/qwen36:latest"
 
 
 def test_cmd_routed_paths_with_spaces_are_rejected():

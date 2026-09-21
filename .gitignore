@@ -12,3 +12,13 @@ dist/
 .mypy_cache/
 .ruff_cache/
 example-target/
+.swarmflow/
+*.db
+*.sqlite
+.env
+.env.*
+*.log
+.idea/
+.vscode/
+.DS_Store
+.coverage

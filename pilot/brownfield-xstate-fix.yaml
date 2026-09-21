@@ -1,6 +1,6 @@
 # Wave-2 fix plan: restore project-wide typecheck for the history-sync delivery.
 project_name: xstate-orch
-project: C:\Users\redde\xstate-orchestration-demo
+project: /path/to/target-repo
 mode: brownfield
 tasks:
   - id: sync-typecheck-fix
