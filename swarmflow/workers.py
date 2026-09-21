@@ -33,6 +33,10 @@ def read_server_load(metrics_url: str, timeout: float = 5) -> dict:
         return {}
     load = {}
     for line in text.splitlines():
+        # newer vLLM adds *_by_reason companions that share the metric prefix; they are
+        # per-reason counts, not the queue total, so ignore them
+        if "_by_reason" in line or line.startswith("#"):
+            continue
         if line.startswith("vllm:num_requests_running"):
             load["running"] = _last_float(line)
         elif line.startswith("vllm:num_requests_waiting"):

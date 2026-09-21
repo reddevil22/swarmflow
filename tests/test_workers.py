@@ -139,6 +139,30 @@ def test_read_server_load_parses_vllm_gauges(monkeypatch):
                                                     "kv": 0.42}
 
 
+def test_read_server_load_ignores_per_reason_companions(monkeypatch):
+    """Newer vLLM emits num_requests_waiting_by_reason lines sharing the prefix."""
+    from swarmflow.workers import read_server_load
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return (b"# HELP vllm:num_requests_waiting Number of waiting requests\n"
+                    b"\nvllm:num_requests_running{engine=\"0\"} 2.0\n"
+                    b"vllm:num_requests_waiting{engine=\"0\"} 5.0\n"
+                    b"vllm:num_requests_waiting_by_reason{engine=\"0\",reason=\"capacity\"} 5.0\n"
+                    b"vllm:num_requests_waiting_by_reason{engine=\"0\",reason=\"deferred\"} 0.0\n"
+                    b"vllm:kv_cache_usage_perc{engine=\"0\"} 0.31\n")
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=5: FakeResponse())
+    assert read_server_load("http://x/metrics") == {"running": 2.0, "waiting": 5.0,
+                                                    "kv": 0.31}
+
+
 def test_read_server_load_failure_is_empty(monkeypatch):
     from swarmflow.workers import read_server_load
 
