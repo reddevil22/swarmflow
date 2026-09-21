@@ -161,6 +161,17 @@ def test_skip_patterns_exclude_files(tmp_path):
     assert result.get("skipped") == "no owned test-shaped files"
 
 
+def test_launch_failure_detection_covers_shell_wording_and_codes():
+    from swarmflow.discrimination import _launch_failed
+
+    assert _launch_failed({"rc": 127, "output": "sh: 1: nosuch: not found"}) is True
+    assert _launch_failed({"rc": 9009, "output": ""}) is True
+    assert _launch_failed({"rc": 1, "output": "command not found"}) is True
+    assert _launch_failed({"rc": None, "timeout": False, "output": ""}) is True
+    assert _launch_failed({"rc": 1, "output": "2 failed, 5 passed"}) is False
+    assert _launch_failed({"rc": 0, "output": "all good"}) is False
+
+
 def test_unlaunchable_command_is_indeterminate(tmp_path):
     repo = _base_repo(tmp_path)
     base = _commit(repo)

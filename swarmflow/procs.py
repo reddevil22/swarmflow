@@ -72,9 +72,17 @@ def listening_ports() -> dict:
 
 
 def is_alive(pid: int) -> bool:
+    """True when the pid is a live process; a zombie counts as terminated.
+
+    POSIX keeps a killed-but-unreaped child visible as a zombie and ``pid_exists``
+    reports it as existing, which would read as a process that survived the kill."""
     if psutil is not None:
         try:
-            return psutil.pid_exists(pid)
+            if not psutil.pid_exists(pid):
+                return False
+            return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.AccessDenied:
+            return True          # exists but is not ours to inspect: assume alive
         except psutil.Error:
             return False
     try:

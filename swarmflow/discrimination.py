@@ -22,7 +22,10 @@ TEST_ADJACENT = ("fixture", "helper", "mock", "conftest", "jest.config", "jest-e
                  "playwright.config", "vitest.config", "test-setup", "setup-tests")
 UNSUPPORTED_FAMILIES = ("go", "cargo")
 LAUNCH_FAILED_MARKERS = ("is not recognized as an internal or external command",
-                         "command not found", "No such file or directory")
+                         "command not found", ": not found", "No such file or directory")
+# POSIX shells exit 127 when the command is not found; cmd.exe uses 9009. The output
+# wording differs per shell (dash: "sh: 1: x: not found"), so the code is the signal.
+LAUNCH_FAILED_RCS = (127, 9009)
 VERDICTS = ("fails_at_parent", "passes_at_parent", "error_at_parent",
             "preexisting_at_parent", "deleted_in_wave", "not_observed")
 
@@ -77,6 +80,8 @@ def _unlink_dir(path: Path) -> bool:
 def _launch_failed(run: dict) -> bool:
     """A shell that cannot find the command still exits with a code on Windows."""
     if run.get("rc") is None and not run.get("timeout"):
+        return True
+    if run.get("rc") in LAUNCH_FAILED_RCS:
         return True
     output = run.get("output") or ""
     return any(marker in output for marker in LAUNCH_FAILED_MARKERS)

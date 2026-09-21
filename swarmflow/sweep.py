@@ -58,7 +58,10 @@ def _candidates(after: dict, project_root: str, settings: dict, self_pid: int):
             continue
         if not _attributable(entry, root):
             continue
-        if _ancestors(after, pid) & excluded:
+        # our own descendants are not orphans. Compare against the caller only: a
+        # reparented orphan's chain reaches the shared init pid, which is also an
+        # ancestor of the caller, so matching the full excluded set would drop it.
+        if self_pid in _ancestors(after, pid):
             continue
         held = [port for port in ports_by_pid.get(pid, []) if port not in ignore_ports]
         yield pid, entry, held

@@ -104,9 +104,16 @@ def test_plan_load_json(tmp_path, capsys):
     assert payload["tasks"]["inserted"] == 1
 
 
-def test_smoke_frontier_json_reports_the_error(tmp_path, capsys):
+def test_smoke_frontier_json_reports_the_error(tmp_path, monkeypatch, capsys):
+    # inject the failure: a real connect to a closed loopback port blocks (rather than
+    # refusing) on some Linux environments, which used to hang CI for the full timeout
+    def boom(*args, **kwargs):
+        raise OSError("connection refused (test)")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
     config = _config(tmp_path, frontier={"backend": "openai",
-                                         "base_url": "http://127.0.0.1:1"})
+                                         "base_url": "http://127.0.0.1:1",
+                                         "timeout_s": 1})
     assert cli.main(["--config", str(config), "smoke-frontier", "--json"]) == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
