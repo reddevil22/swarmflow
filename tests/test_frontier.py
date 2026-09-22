@@ -6,12 +6,13 @@ backend runs the local Python interpreter.
 
 import json
 import sys
+import urllib.request
 
 import pytest
 
 from swarmflow.frontier import (CommandCodeBackend, FrontierError, GenericCliBackend,
-                                OpenAICompatBackend, PiBackend, build_backend,
-                                parse_ndjson_result)
+                                OpenAICompatBackend, PiBackend, _urllib_transport,
+                                build_backend, parse_ndjson_result)
 
 
 def test_result_frame_is_extracted():
@@ -147,6 +148,35 @@ def test_openai_backend_http_error_is_not_ok():
     result = backend.complete("hi")
     assert result["ok"] is False
     assert result["exit_code"] == 500
+
+
+def test_urllib_transport_identifies_the_client(monkeypatch):
+    """Gateways behind WAFs 403 urllib's default UA (Command Code provider: 1010)."""
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    status, _ = _urllib_transport("POST", "http://x/v1/chat/completions",
+                                  {"Authorization": "Bearer k"}, b"{}", 5)
+
+    assert status == 200
+    assert captured["headers"]["user-agent"].startswith("swarmflow/")
+    assert captured["headers"]["authorization"] == "Bearer k"
 
 
 # -------------------------------------------------------------------- cli backend

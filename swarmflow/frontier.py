@@ -29,6 +29,7 @@ import time
 import urllib.error
 import urllib.request
 
+from . import __version__
 from .config import build_cli_command, resolve_executable
 
 
@@ -68,8 +69,13 @@ def _empty_result(backend: str, exit_code=None, raw_tail: str = "") -> dict:
 
 # --------------------------------------------------------------- openai-compatible
 
+# Some gateways (the Command Code provider edge included) reject urllib's default
+# User-Agent with a WAF 403/1010, so identify the client explicitly.
+USER_AGENT = f"swarmflow/{__version__}"
+
 
 def _urllib_transport(method, url, headers, body, timeout):
+    headers = {"User-Agent": USER_AGENT, **(headers or {})}
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

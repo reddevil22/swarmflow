@@ -89,6 +89,15 @@ DEFAULTS = {
     "git": {
         "branch_prefix": "swarmflow/",
     },
+    # Named providers (see apply_providers): swap models with one line, e.g.
+    #   providers:
+    #     commandcode:
+    #       frontier: {backend: openai, base_url: "https://api.commandcode.ai/provider/v1",
+    #                  api_key: "${COMMANDCODE_API_KEY}", model: deepseek/deepseek-v4-flash}
+    #       worker: "commandcode/deepseek/deepseek-v4-flash"
+    #   role_providers: {frontier: commandcode, worker: commandcode}
+    "providers": {},
+    "role_providers": {"frontier": "", "worker": ""},
 }
 
 
@@ -202,11 +211,48 @@ def validate_config(config: dict) -> list:
     return problems
 
 
+def apply_providers(config: dict) -> dict:
+    """Resolve ``role_providers`` selections into the frontier and worker settings.
+
+    ``providers.<name>`` holds a ``frontier:`` block (backend/base_url/api_key/model/
+    extra_body/...) and/or a ``worker:`` model string in Pi's ``provider/model`` form.
+    ``role_providers.frontier`` / ``role_providers.worker`` select one by name; the
+    selected block overrides the corresponding role defaults, so changing model or
+    endpoint is a one-line edit and no prompt or code changes.
+    """
+    providers = config.get("providers") or {}
+    roles = config.get("role_providers") or {}
+    for role in ("frontier", "worker"):
+        name = str(roles.get(role) or "").strip()
+        if not name:
+            continue
+        if name not in providers:
+            raise ValueError(
+                f"role_providers.{role} names unknown provider {name!r}; known providers: "
+                f"{sorted(providers) or '(none defined)'}")
+        entry = providers[name] or {}
+        if role == "frontier":
+            block = entry.get("frontier")
+            if not isinstance(block, dict) or not block:
+                raise ValueError(
+                    f"providers.{name}.frontier must be a non-empty mapping with the "
+                    "backend/base_url/model fields for this role")
+            config.setdefault("frontier", {}).update(block)
+        else:
+            model = str(entry.get("worker") or "").strip()
+            if not model:
+                raise ValueError(
+                    f"providers.{name}.worker must be a Pi model string such as "
+                    "'commandcode/deepseek/deepseek-v4-flash'")
+            config.setdefault("worker", {})["model"] = model
+    return config
+
+
 def load_config(path: str | None = None) -> dict:
     """Load configuration, deep-merged over defaults, with env expansion."""
     config_path = resolve_config_path(path)
     data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    merged = _expand(_merge(DEFAULTS, data))
+    merged = apply_providers(_expand(_merge(DEFAULTS, data)))
     problems = validate_config(merged)
     if problems:
         raise ValueError("invalid configuration:\n  - " + "\n  - ".join(problems))

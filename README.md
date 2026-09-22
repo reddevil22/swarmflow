@@ -59,6 +59,41 @@ state is known-good), `--strict` (force fail-closed comparison), `--skip-regress
 `--concurrency N`. `swarmflow recon --regression-command "<cmd>"` overrides detection
 for a single survey; `swarmflow freeze --mode brownfield` snapshots the git baseline.
 
+## Swapping models (providers)
+
+Model choice is configuration, not code. Name the endpoints you use once, select one per
+role, and prompts, gates and evidence stay identical:
+
+```yaml
+providers:
+  commandcode:
+    frontier:
+      backend: openai
+      base_url: "https://api.commandcode.ai/provider/v1"
+      api_key: "${COMMANDCODE_API_KEY}"
+      model: deepseek/deepseek-v4-flash
+    worker: "commandcode/deepseek/deepseek-v4-flash"
+  local-qwen:
+    frontier: {backend: openai, base_url: "http://127.0.0.1:8000/v1",
+               model: qwen3.8-flash-next}
+    worker: "local/qwen3.8-flash-next"
+
+role_providers: {frontier: commandcode, worker: commandcode}
+```
+
+- `frontier` serves planning, verification and acceptance. Any OpenAI-compatible
+  `/chat/completions` endpoint (`openai`), the Command Code CLI (`commandcode`), an
+  arbitrary agent CLI (`cli`) or Pi (`pi`); a provider's `frontier` block overrides the
+  `frontier:` defaults, so switching endpoints or models is one line.
+- `worker` selects the Pi `provider/model` that wave sessions run on - swap it to move
+  the code-writing swarm between a local endpoint and a hosted one.
+- Keys expand from the environment (`${COMMANDCODE_API_KEY}`), so secrets stay out of the
+  file, and `swarmflow smoke-frontier` / `smoke-worker` verify a selection before a run.
+- Prefer `backend: openai` for the frontier roles: they are text-in/text-out, so the
+  agent harness buys nothing. Measured on the same acceptance material, the CLI path sent
+  31.5k input tokens where the HTTP path sent 4.5k and returned valid JSON in 34s - and
+  an agentic harness can decide to go explore the repository instead of answering.
+
 ## How it works (short version)
 ```
 PRD --(frontier: plan, operator-run)--> work packages + frozen contracts + acceptance

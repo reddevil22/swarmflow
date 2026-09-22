@@ -65,12 +65,17 @@ def cmd_smoke_frontier(args, config) -> int:
             print(f"FRONTIER FAIL: {exc}")
         return 1
     ok = result["ok"] and "frontier-ok" in result["final_text"]
+    role = (config.get("role_providers") or {}).get("frontier") or "-"
+    model = config["frontier"].get("model") or "-"
+    endpoint = config["frontier"].get("base_url") or ""
     if args.json:
         print(json.dumps({"ok": ok, "backend": result.get("backend"),
+                          "provider": role, "model": model, "base_url": endpoint,
                           "subtype": result["subtype"], "usage": result["usage"],
                           "text": result["final_text"]}))
         return 0 if ok else 1
     print(f"FRONTIER {'OK' if ok else 'FAIL'} backend={result.get('backend')} "
+          f"provider={role} model={model} {'endpoint=' + endpoint + ' ' if endpoint else ''}"
           f"subtype={result['subtype']} exit={result['exit_code']} "
           f"usage={result['usage']} text={result['final_text']!r}")
     return 0 if ok else 1
@@ -90,12 +95,16 @@ def cmd_smoke_worker(args, config) -> int:
         ledger.close()
         return 1
     ok = "worker-ok" in result["scan"].get("last_text", "")
+    role = (config.get("role_providers") or {}).get("worker") or "-"
+    model = config["worker"].get("model") or "-"
     if args.json:
         print(json.dumps({"ok": ok, "outcome": result["outcome"],
+                          "provider": role, "model": model,
                           "turns": result["scan"]["turns"],
                           "trace_dir": str(runner.logs_dir)}))
     else:
-        print(f"WORKER {'OK' if ok else 'FAIL'} outcome={result['outcome']} "
+        print(f"WORKER {'OK' if ok else 'FAIL'} provider={role} model={model} "
+              f"outcome={result['outcome']} "
               f"turns={result['scan']['turns']} trace_dir={runner.logs_dir}")
     ledger.close()
     return 0 if ok else 1

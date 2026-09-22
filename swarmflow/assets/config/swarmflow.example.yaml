@@ -5,6 +5,32 @@
 # Note: model ids, thinking levels and .cmd/.bat executable paths are validated at
 # load time (no shell metacharacters; cmd.exe-routed paths may not contain spaces).
 
+# ---------------------------------------------------------------------------- providers
+# Optional named providers: define endpoints once, then select which one serves each
+# role with `role_providers`. Swapping a model is one line - no prompt or code changes.
+# A provider's `frontier` block overrides the `frontier:` defaults below (same keys);
+# its `worker` string must match a model id configured in Pi (~/.pi/agent/models.json).
+#
+# providers:
+#   commandcode:
+#     frontier:
+#       backend: openai
+#       base_url: "https://api.commandcode.ai/provider/v1"
+#       api_key: "${COMMANDCODE_API_KEY}"
+#       model: deepseek/deepseek-v4-flash
+#     worker: "commandcode/deepseek/deepseek-v4-flash"
+#   local-qwen:
+#     frontier:
+#       backend: openai
+#       base_url: "http://127.0.0.1:8000/v1"
+#       model: qwen3.8-flash-next
+#     worker: "local/qwen3.8-flash-next"
+#
+# role_providers:
+#   frontier: commandcode      # planning / verification / acceptance
+#   worker: commandcode        # Pi sessions that write code
+# Leaving a role empty keeps the explicit settings below.
+
 frontier:
   # Backend used for planning / verification / acceptance.
   #   auto        - picks the first configured option below (command > base_url > CLI)

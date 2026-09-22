@@ -7,6 +7,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- **Provider layer**: `providers.<name>` defines a frontier block and a worker model once;
+  `role_providers.frontier|worker` selects which one serves each role, overriding the role
+  defaults. Swapping models (hosted <-> local, frontier and workers independently) is one
+  config line, keys expand from the environment, and unknown/incomplete selections are
+  rejected at load time. Documented in the README and the example config.
 - **CI** (`.github/workflows/ci.yml`): the suite runs on Linux (3.11, 3.13) and Windows
   (3.13), and a packaging job builds the wheel, installs it into a clean environment and
   smokes `swarmflow init` + `status --json` outside the source tree.
@@ -39,6 +44,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the tool's own artifacts (`.swarmflow/`, `*.db`, `.env*`, editor dirs).
 
 ### Fixed
+- **HTTP requests identify the client**: urllib's default `User-Agent` is blocked by WAFs
+  in front of some OpenAI-compatible gateways (the Command Code provider edge answers
+  `403 code 1010`), so the transport now sends `swarmflow/<version>`.
 - **Dead ledger surface**: the never-used `report_path` column and the phantom `inline`
   task row that `run_inline` recorded are gone (the smoke path writes no ledger state,
   pinned by a test).
