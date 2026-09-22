@@ -56,6 +56,22 @@ def _run_state(project_root: str) -> dict:
     return runstate.load_run(project_root)
 
 
+def _project_tasks(ledger, root: Path) -> list:
+    """Ledger rows for this project only.
+
+    The ledger is shared across every run on this machine, so an unfiltered list mixes
+    other projects' tasks (and their reports) into this run's evidence bundle - the
+    acceptance pass flagged exactly that."""
+    rows = []
+    for task in ledger.list_tasks():
+        try:
+            if Path(task["project"]).resolve() == root:
+                rows.append(task)
+        except (KeyError, OSError, ValueError):
+            continue
+    return rows
+
+
 def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
     """Assemble the evidence bundle as markdown."""
     root = Path(project_root)
@@ -74,7 +90,7 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
     lines.append("")
 
     lines.append("## Tasks")
-    for task in ledger.list_tasks():
+    for task in _project_tasks(ledger, root):
         verdict = (task.get("verdict") or "")[:200]
         lines.append(f"- **{task['id']}** wave={task['wave']} status={task['status']} "
                      f"attempts={task['attempts']} verdict={verdict}")
@@ -86,7 +102,7 @@ def bundle(project_root: str, ledger, ignores: list | None = None) -> str:
 
     run_started = state.get("created_at", "")
     lines.append("## Per-task verification")
-    for task in ledger.list_tasks():
+    for task in _project_tasks(ledger, root):
         if run_started and (task.get("created_at") or "") < run_started:
             continue
         verdict = latest_verdict(str(root), task["id"])
@@ -244,7 +260,7 @@ def _report_sections(root: Path, ledger, run_started: str) -> list:
     lines = ["## Worker reports",
              "- note: agent narratives (bounded head+tail); the sections above are the "
              "final state"]
-    for task in ledger.list_tasks():
+    for task in _project_tasks(ledger, root):
         trace = task.get("worker_trace")
         if not trace:
             continue

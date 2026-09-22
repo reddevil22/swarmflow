@@ -61,6 +61,23 @@ def test_bundle_puts_verification_before_the_narratives(tmp_path):
     assert "chars omitted" in text
 
 
+def test_bundle_is_scoped_to_the_project(tmp_path):
+    """The ledger is shared across runs; another project's tasks must not leak in."""
+    project = tmp_path / "p"
+    project.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    ledger = Ledger(str(tmp_path / "l.db"))
+    ledger.add_task("MINE", str(project.resolve()), wave=1, owner_files=["a.py"])
+    ledger.add_task("THEIRS", str(other.resolve()), wave=1, owner_files=["b.py"])
+
+    text = bundle(str(project), ledger)
+    ledger.close()
+
+    assert "MINE" in text
+    assert "THEIRS" not in text
+
+
 def test_bundle_marks_unverified_tasks(tmp_path):
     project = tmp_path / "p"
     project.mkdir()

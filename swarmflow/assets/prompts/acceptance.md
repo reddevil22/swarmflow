@@ -10,6 +10,10 @@ evidence bundle: per-task verification verdicts, gate results (regression, audit
 discrimination, process sweep), the bounded git diff and, last, the worker reports. Map
 each criterion to evidence and give a final verdict. Respond with ONLY a JSON object.
 
+This role is text-only: do NOT use tools, do NOT read files, do NOT run commands, and do
+not inspect any repository. Everything you need is in this prompt (the criteria and the
+bundle). Your first and only output is the JSON object.
+
 ## Output schema (exact keys)
 
 {
