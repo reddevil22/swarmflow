@@ -1,6 +1,7 @@
 """Config portability tests: env expansion, path resolution, CLI command shaping."""
 
 import os
+import warnings
 
 import pytest
 
@@ -92,6 +93,53 @@ def test_unknown_or_incomplete_provider_selections_are_rejected(tmp_path):
     path.write_text("providers:\n  p:\n    worker: \"x/y\"\n"
                     "role_providers: {frontier: p}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="providers.p.frontier"):
+        load_config(str(path))
+
+
+def test_typos_in_provider_blocks_are_rejected(tmp_path):
+    text = (
+        "providers:\n"
+        "  p:\n"
+        "    frontier:\n"
+        "      backend: openai\n"
+        '      base_ur: "http://127.0.0.1:8000/v1"\n'
+        "role_providers: {frontier: p}\n"
+    )
+    path = tmp_path / "typo.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=r"unknown key\(s\) \['base_ur'\]"):
+        load_config(str(path))
+
+    text = (
+        "providers:\n"
+        "  p:\n"
+        "    frontier:\n"
+        "      backend: openai\n"
+        '      base_url: "http://127.0.0.1:8000/v1"\n'
+        "    url: x\n"
+        "role_providers: {frontier: p}\n"
+    )
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=r"providers.p has unknown key\(s\) \['url'\]"):
+        load_config(str(path))
+
+
+def test_literal_api_keys_warn_but_env_refs_and_placeholders_do_not(tmp_path):
+    with pytest.warns(UserWarning, match="frontier.api_key holds a literal value"):
+        load_config(_provider_config(tmp_path, api_key="sk-live-literal"))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        load_config(_provider_config(tmp_path, api_key="${SOME_KEY}"))
+        load_config(_provider_config(tmp_path, api_key="dummy"))
+        path = tmp_path / "top.yaml"
+        path.write_text('frontier: {backend: openai, base_url: "http://127.0.0.1:1/v1",'
+                        ' model: m, api_key: "${TOP_KEY}"}\n', encoding="utf-8")
+        load_config(str(path))
+
+    path.write_text('frontier: {backend: openai, base_url: "http://127.0.0.1:1/v1",'
+                    ' model: m, api_key: "sk-top-literal"}\n', encoding="utf-8")
+    with pytest.warns(UserWarning, match="frontier.api_key holds a literal value"):
         load_config(str(path))
 
 

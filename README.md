@@ -86,9 +86,13 @@ role_providers: {frontier: commandcode, worker: commandcode}
   arbitrary agent CLI (`cli`) or Pi (`pi`); a provider's `frontier` block overrides the
   `frontier:` defaults, so switching endpoints or models is one line.
 - `worker` selects the Pi `provider/model` that wave sessions run on - swap it to move
-  the code-writing swarm between a local endpoint and a hosted one.
+  the code-writing swarm between a local endpoint and a hosted one. A provider entry
+  carries only that model id for the worker role: how the endpoint is reached stays with
+  Pi (its own provider config), so `swarmflow` never duplicates Pi's provider setup.
 - Keys expand from the environment (`${COMMANDCODE_API_KEY}`), so secrets stay out of the
-  file, and `swarmflow smoke-frontier` / `smoke-worker` verify a selection before a run.
+  file, and `swarmflow smoke-frontier` / `smoke-worker` verify a selection before a run. A
+  literal key still works but draws a load-time warning, and a typo inside a provider
+  block (`base_ur:`) is rejected instead of silently ignored.
 - Prefer `backend: openai` for the frontier roles: they are text-in/text-out, so the
   agent harness buys nothing. Measured on the same acceptance material, the CLI path sent
   31.5k input tokens where the HTTP path sent 4.5k and returned valid JSON in 34s - and

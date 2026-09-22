@@ -12,6 +12,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   defaults. Swapping models (hosted <-> local, frontier and workers independently) is one
   config line, keys expand from the environment, and unknown/incomplete selections are
   rejected at load time. Documented in the README and the example config.
+- **Provider-block validation and key hygiene**: keys inside a provider block are checked
+  against the known frontier keys, so a typo (`base_ur:`) is a load error rather than a
+  silently ignored line; an unknown provider-level key is rejected too; and a literal
+  `api_key` draws a load-time warning (placeholders such as `dummy` and `${ENV_VAR}`
+  references stay quiet) so secrets are steered out of config files.
+- **End-to-end provider test** (`tests/test_providers_e2e.py`): a loopback stub endpoint
+  serves `/chat/completions`; selecting one provider and then another must move both the
+  request path and the model id, with the key passed through as a bearer token. No
+  network, and it fails if selection stops routing traffic.
 - **CI** (`.github/workflows/ci.yml`): the suite runs on Linux (3.11, 3.13) and Windows
   (3.13), and a packaging job builds the wheel, installs it into a clean environment and
   smokes `swarmflow init` + `status --json` outside the source tree.

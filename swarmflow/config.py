@@ -3,6 +3,7 @@
 import os
 import re
 import shutil
+import warnings
 from pathlib import Path
 
 import yaml
@@ -168,6 +169,12 @@ def resolve_paths(config: dict) -> dict:
 SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9._/@:+-]{1,120}$")
 CMD_UNSAFE_RE = re.compile(r'[&|^<>%" ]')
 
+# provider frontier blocks are an overlay of these keys; anything else is a typo
+FRONTIER_KEYS = frozenset(DEFAULTS["frontier"])
+PROVIDER_KEYS = frozenset({"frontier", "worker"})
+# obvious placeholders for local endpoints, where a "key" is never a secret
+KEY_PLACEHOLDERS = frozenset({"dummy", "no-key-needed", "not-needed", "none", "local", "-"})
+
 
 def _cmd_routed(path: str) -> bool:
     return path.lower().endswith((".cmd", ".bat"))
@@ -208,7 +215,63 @@ def validate_config(config: dict) -> list:
     for name in (config.get("sweep") or {}).get("ignore_names") or []:
         if not isinstance(name, str) or not SAFE_VALUE_RE.match(name):
             problems.append(f"sweep.ignore_names entry is invalid: {name!r}")
+    problems.extend(_provider_problems(config.get("providers")))
     return problems
+
+
+def _provider_problems(providers) -> list:
+    """Shape problems inside ``providers`` (unknown keys are typos, not tolerated)."""
+    if providers is None:
+        return []
+    if not isinstance(providers, dict):
+        return ["providers must be a mapping of name -> {frontier: ..., worker: ...}"]
+    problems = []
+    for name, entry in providers.items():
+        if not isinstance(entry, dict):
+            problems.append(f"providers.{name} must be a mapping")
+            continue
+        unknown = sorted(set(entry) - PROVIDER_KEYS)
+        if unknown:
+            problems.append(f"providers.{name} has unknown key(s) {unknown}; "
+                            f"expected any of {sorted(PROVIDER_KEYS)}")
+        block = entry.get("frontier")
+        if block is not None:
+            if not isinstance(block, dict):
+                problems.append(f"providers.{name}.frontier must be a mapping")
+            else:
+                unknown = sorted(set(block) - FRONTIER_KEYS)
+                if unknown:
+                    problems.append(
+                        f"providers.{name}.frontier has unknown key(s) {unknown}; "
+                        f"frontier keys are {sorted(FRONTIER_KEYS)}")
+        worker = entry.get("worker")
+        if worker is not None and not isinstance(worker, str):
+            problems.append(f"providers.{name}.worker must be a Pi model string")
+    return problems
+
+
+def _warn_literal_keys(data: dict) -> None:
+    """Nudge configs toward ${ENV_VAR} for secrets. The value is never echoed.
+
+    Runs on the raw file (before expansion), so an env reference is recognisable."""
+    def check(label: str, value) -> None:
+        if not isinstance(value, str) or not value.strip() or "${" in value:
+            return
+        if value.strip().lower() in KEY_PLACEHOLDERS:
+            return
+        warnings.warn(
+            f"{label} holds a literal value; prefer ${{ENV_VAR}} so the secret stays out "
+            "of the config file", UserWarning, stacklevel=3)
+
+    frontier = data.get("frontier")
+    if isinstance(frontier, dict):
+        check("frontier.api_key", frontier.get("api_key"))
+    providers = data.get("providers")
+    if isinstance(providers, dict):
+        for name, entry in providers.items():
+            block = entry.get("frontier") if isinstance(entry, dict) else None
+            if isinstance(block, dict):
+                check(f"providers.{name}.frontier.api_key", block.get("api_key"))
 
 
 def apply_providers(config: dict) -> dict:
@@ -252,6 +315,7 @@ def load_config(path: str | None = None) -> dict:
     """Load configuration, deep-merged over defaults, with env expansion."""
     config_path = resolve_config_path(path)
     data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    _warn_literal_keys(data)
     merged = apply_providers(_expand(_merge(DEFAULTS, data)))
     problems = validate_config(merged)
     if problems:

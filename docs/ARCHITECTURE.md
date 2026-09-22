@@ -121,6 +121,20 @@ duration_ms, session_id, exit_code`); `max_turns`/`effort` are best-effort and i
 by single-shot HTTP backends. `swarmflow smoke-frontier` verifies whichever backend is
 configured.
 
+## Provider layer
+
+`providers.<name>` names one frontier overlay plus one worker model, and
+`role_providers` selects which role uses it; `config.apply_providers` resolves the
+selection at load time, before validation and before any component reads the config, so
+roles, workers and `frontier.build_backend` keep seeing plain `frontier` / `worker`
+values and nothing downstream knows the layer exists. An unselected or absent `providers`
+block leaves the resolved config exactly as written. Unknown provider names, incomplete
+blocks (a `frontier` with no block, a worker with no model string) and typo'd keys inside
+a provider block are load-time errors; `api_key` supports `${ENV_VAR}` expansion, and a
+literal value is accepted with a warning so secrets do not quietly accumulate in files.
+Selection itself is exercised end-to-end (traffic and model id both follow the selection)
+by `tests/test_providers_e2e.py` against a loopback stub endpoint.
+
 ## Repository layout
 
 ```
