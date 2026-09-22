@@ -142,7 +142,10 @@ class CommandCodeBackend:
         self.effort = effort
         self.timeout_s = timeout_s
 
-    def complete(self, prompt, *, max_turns=1, model=None, effort=None, timeout=None):
+    def complete(self, prompt, *, max_turns=8, model=None, effort=None, timeout=None):
+        # the CLI is an agent: it spends turns on tool calls before answering, so the
+        # previous default of 1 ended real planning prompts with subtype "max_turns" and
+        # no answer at all (the CLI's own default is 100)
         prefix = build_cli_command(self.cmd_path, "node")
         args = prefix + [
             "-p", "--output-format", "json", "--skip-onboarding", "-t",

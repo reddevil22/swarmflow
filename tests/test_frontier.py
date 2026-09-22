@@ -62,6 +62,29 @@ def test_auto_prefers_explicit_configuration():
         CommandCodeBackend)
 
 
+def test_commandcode_backend_gives_the_agentic_cli_more_than_one_turn(monkeypatch):
+    """--max-turns 1 starved real prompts: one tool call consumed the whole budget."""
+    from swarmflow.frontier import CommandCodeBackend
+
+    captured = {}
+
+    class Proc:
+        returncode = 0
+        stdout = json.dumps({"type": "result", "subtype": "success", "finalText": "ok"})
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return Proc()
+
+    monkeypatch.setattr("swarmflow.frontier.subprocess.run", fake_run)
+    backend = CommandCodeBackend("C:/tools/commandcode.cmd", "deepseek/deepseek-v4-flash")
+    result = backend.complete("plan this")
+
+    assert result["ok"] is True
+    turns = captured["args"][captured["args"].index("--max-turns") + 1]
+    assert int(turns) > 1
+
+
 def test_unknown_backend_raises():
     with pytest.raises(FrontierError, match="unknown frontier backend"):
         build_backend({"backend": "wat"})
