@@ -11,7 +11,9 @@ import pytest
 import yaml
 
 from swarmflow import cli, pipeline, procs, runstate
+from swarmflow.config import load_config
 from swarmflow.ledger import Ledger
+from swarmflow.workers import WorkerRunner
 
 
 def _git_available():
@@ -1237,3 +1239,167 @@ def test_brownfield_wave_aborts_without_node_modules(tmp_path):
     kinds = [event["kind"] for event in ledger.events("T1", limit=20)]
     ledger.close()
     assert "wave-abort" in kinds
+
+
+class _DeadProc:
+    """A worker whose process has already exited cleanly."""
+
+    pid = 999999
+
+    def poll(self):
+        return 0
+
+
+class _ClosedOut:
+    def close(self):
+        pass
+
+
+def _fake_worker_spawn(project, trace):
+    """A WorkerRunner._spawn replacement: snapshot the owned files, then deliver them."""
+    from swarmflow.audit import _hash_file
+
+    def spawn(self, task, thinking, attempt):
+        before = {}
+        for rel in task.get("owner_files") or []:
+            path = project / rel
+            before[rel] = _hash_file(path) if path.exists() else None
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{rel} delivered\n", encoding="utf-8")
+        trace.write_text('{"type": "agent_end"}\n', encoding="utf-8")
+        return {"proc": _DeadProc(), "out": _ClosedOut(), "trace": str(trace),
+                "task": task, "thinking": thinking, "before": before,
+                "pgid": None, "started": time.monotonic()}
+
+    return spawn
+
+
+def test_wave_run_drives_the_real_worker_runner(tmp_path, monkeypatch):
+    """The pipeline and the real runner agree on the result contract end to end."""
+    project = tmp_path / "app"
+    project.mkdir()
+    trace = tmp_path / "trace.jsonl"
+    config = load_config(str(_config(tmp_path)))
+    config["worker"].update({"model": "fake/model", "pi_cli": "unused", "poll_s": 0.05,
+                             "timeout_s": 10})
+    config["swarm"]["stagger_s"] = 0.0
+    config["git"] = {"commit_tasks": False}
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    ledger.add_task("T1", str(project), wave=1, owner_files=["feature.py"])
+    monkeypatch.setattr("swarmflow.workers.kill_tree", lambda pid, pgid=None: False)
+    monkeypatch.setattr(WorkerRunner, "_spawn", _fake_worker_spawn(project, trace))
+    monkeypatch.setattr(WorkerRunner, "_send_prompt", lambda self, handle, prompt: None)
+
+    rc, report = pipeline.run_wave(ledger, config, wave=1, quiet=True)
+
+    assert rc == 0
+    entry = report["results"][0]
+    assert set(entry) == {"task_id", "outcome", "status", "turns", "out_tokens",
+                          "server_launches"}
+    assert entry["task_id"] == "T1"
+    assert entry["outcome"] == "delivered"
+    assert entry["status"] == "delivered"
+    assert entry["turns"] == 0 and entry["out_tokens"] == 0
+    assert entry["server_launches"] == 0
+    assert ledger.get("T1")["status"] == "delivered"
+    assert (project / "feature.py").read_text(encoding="utf-8") == "feature.py delivered\n"
+    ledger.close()
+
+
+def _boom(*args, **kwargs):
+    raise RuntimeError("boom")
+
+
+def test_sweep_crash_is_contained(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "app"
+    config = _config(tmp_path)
+    plan = _greenfield_plan(tmp_path, project, ["T1"])
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+
+    monkeypatch.setattr("swarmflow.pipeline.sweep_mod.run_sweep", _boom)
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+    out = capsys.readouterr().out
+    sweep = json.loads((project / ".swarmflow" / "evidence"
+                        / "wave1.sweep.json").read_text(encoding="utf-8"))
+    assert sweep["indeterminate"] is True
+    assert "sweep crashed: boom" in sweep["reason"]
+    assert "process sweep INDETERMINATE" in out
+
+
+def test_discrimination_crash_is_indeterminate(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "app"
+    config = _config(tmp_path)
+    plan = _greenfield_plan(tmp_path, project, ["T1"])
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+
+    monkeypatch.setattr("swarmflow.discrimination.run_check", _boom)
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "discrimination INDETERMINATE: check crashed: boom" in out
+    evidence = json.loads((project / ".swarmflow" / "evidence"
+                           / "wave1.discrimination.json").read_text(encoding="utf-8"))
+    assert evidence["indeterminate"] is True
+
+    # the same evidence fails the wave when the gate is enforcing
+    enforce = tmp_path / "cfg_enforce.yaml"
+    enforce.write_text(yaml.safe_dump({
+        "paths": {"ledger": str(tmp_path / "ledger.db"),
+                  "state_dir": str(tmp_path / "state")},
+        "discrimination": {"mode": "enforce"}}), encoding="utf-8")
+    plan2 = _greenfield_plan(tmp_path, project, ["T2"])
+    assert cli.main(["--config", str(enforce), "plan-load", "--plan", str(plan2)]) == 0
+    assert cli.main(["--config", str(enforce), "wave-run", "--wave", "1"]) == 1
+
+
+def test_audit_crash_fails_the_wave(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "app"
+    config = _config(tmp_path)
+    plan = _greenfield_plan(tmp_path, project, ["T1"])
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+
+    monkeypatch.setattr(pipeline, "audit", _boom)
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 1
+    out = capsys.readouterr().out
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    kinds = [event["kind"] for event in ledger.events("T1", limit=20)]
+    ledger.close()
+    assert "SCOPE AUDIT ERROR: boom" in out
+    assert "audit-error" in kinds
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_seal_crash_is_contained(tmp_path, monkeypatch, capsys):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["feature.py"])])
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+
+    monkeypatch.setattr(pipeline, "seal", _boom)
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "seal failed, baseline left unsealed: boom" in out
+    assert not (repo / ".swarmflow" / "evidence" / "wave1.seal.json").exists()
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_commit_exception_is_contained(tmp_path, monkeypatch, capsys):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n", "a.py": "old\n"})
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["a.py"])])
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+    (repo / "a.py").write_text("new\n", encoding="utf-8")     # a change the commit must take
+
+    monkeypatch.setattr("swarmflow.gitutil.commit_paths", _boom)
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+    out = capsys.readouterr().out
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    kinds = [event["kind"] for event in ledger.events("T1", limit=20)]
+    ledger.close()
+    assert "commit failed for T1: RuntimeError: boom" in out
+    assert "commit-failed" in kinds
+    assert _git_out(repo, "log", "--format=%s").splitlines() == ["baseline"]

@@ -504,3 +504,74 @@ def test_wave_run_verify_skipped_when_gates_fail(tmp_path, monkeypatch):
     assert cli.main(["--config", str(config), "wave-run", "--wave", "1",
                      "--verify"]) == 1
     assert backend.prompts == []
+
+
+def test_wave_run_verify_unavailable_is_rc_two_or_skipped(tmp_path, monkeypatch, capsys):
+    config = _config(tmp_path)
+    _, plan_path = _wave_setup(tmp_path)
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    _patch(monkeypatch, FakeBackend(FrontierError("boom"), FrontierError("boom")))
+
+    # every task's verify call fails on the frontier: the operator asked explicitly
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1", "--verify"]) == 2
+    assert "verify failed: frontier unavailable" in capsys.readouterr().out
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    assert ledger.get("T1")["status"] == "delivered"          # the task is left alone
+    ledger.close()
+
+    # the same evidence is only reported when verify runs by config
+    enabled = tmp_path / "cfg_verify.yaml"
+    enabled.write_text(yaml.safe_dump({
+        "paths": {"ledger": str(tmp_path / "ledger.db"),
+                  "state_dir": str(tmp_path / "state")},
+        "verify": {"enabled": True}}), encoding="utf-8")
+    plan2 = _wave_setup(tmp_path)[1]
+    plan_data = yaml.safe_load(plan2.read_text(encoding="utf-8"))
+    plan_data["tasks"] = [dict(task, id=f"W{index}")
+                          for index, task in enumerate(plan_data["tasks"])]
+    plan2.write_text(yaml.safe_dump(plan_data), encoding="utf-8")
+    assert cli.main(["--config", str(enabled), "plan-load", "--plan", str(plan2)]) == 0
+    _patch(monkeypatch, FakeBackend(FrontierError("boom"), FrontierError("boom")))
+
+    assert cli.main(["--config", str(enabled), "wave-run", "--wave", "1"]) == 0
+    assert "verify skipped: frontier not configured" in capsys.readouterr().out
+
+
+def test_wave_run_verify_caps_the_wave(tmp_path, monkeypatch, capsys):
+    capped = tmp_path / "cfg_cap.yaml"
+    capped.write_text(yaml.safe_dump({
+        "paths": {"ledger": str(tmp_path / "ledger.db"),
+                  "state_dir": str(tmp_path / "state")},
+        "verify": {"max_tasks": 1}}), encoding="utf-8")
+    _, plan_path = _wave_setup(tmp_path)
+    assert cli.main(["--config", str(capped), "plan-load", "--plan", str(plan_path)]) == 0
+    monkeypatch.setattr(pipeline, "_runner", lambda config, ledger, root: FakeRunner(ledger))
+    backend = _patch(monkeypatch, FakeBackend(_verdict("pass")))
+
+    assert cli.main(["--config", str(capped), "wave-run", "--wave", "1", "--verify"]) == 0
+    out = capsys.readouterr().out
+    assert "1 skipped over max_tasks" in out
+    assert len(backend.prompts) == 1                          # one paid call, not two
+
+
+def test_wave_run_verify_runs_for_a_delivered_only_wave(tmp_path, monkeypatch):
+    """No queued tasks, but --verify still verifies what the wave already delivered."""
+    config = _config(tmp_path)
+    _, plan_path = _wave_setup(tmp_path)
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan_path)]) == 0
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    for task_id in ("T1", "T2"):
+        ledger.set_status(task_id, "delivered")
+    ledger.close()
+    backend = _patch(monkeypatch, FakeBackend(
+        _verdict("pass"),
+        json.dumps({"task_id": "T2", "verdict": "pass", "findings": [],
+                    "requirement_coverage": [], "uncovered": []})))
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1", "--verify"]) == 0
+    assert len(backend.prompts) == 2
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    assert ledger.get("T1")["status"] == "verified"
+    assert ledger.get("T2")["status"] == "verified"
+    ledger.close()
