@@ -8,6 +8,7 @@ Docs:
 - docs/WORKFLOW.md: PRD -> MVP stages, evidence bundle, human PR gate
 - docs/PLAN_SCHEMA.md: plan.yaml format (tasks, ownership, test_command, acceptance)
 - docs/CASE_STUDY.md: first validation run outcomes and incidents
+- docs/MODEL_EVALUATION_qwen3.8-flash-next.md: local model evaluated as frontier and workers (costs, failure modes, config)
 - AGENTS.md: repository guide for coding agents
 - AGENTS.worker.md: worker rules template injected into scaffolded projects
 
