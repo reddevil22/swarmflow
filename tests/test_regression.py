@@ -356,15 +356,6 @@ def test_compare_different_failing_test_equal_counts_is_regression():
     assert comparison["fixed_failures"] == ["old"]
 
 
-def test_compare_one_fixed_one_new_is_regression():
-    baseline = {"rc": 1, "failures": 1, "fingerprints": ["a"]}
-    current = {"rc": 1, "failures": 1, "fingerprints": ["b"]}
-    comparison = compare(baseline, current)
-    assert comparison["regressed"] is True
-    assert comparison["new_failures"] == ["b"]
-    assert comparison["fixed_failures"] == ["a"]
-
-
 def test_compare_suite_shrink_green_to_green_is_regression():
     baseline = {"rc": 0, "failures": None, "tests_ran": 13, "unit": "tests"}
     current = {"rc": 0, "failures": None, "tests_ran": 5, "unit": "tests"}

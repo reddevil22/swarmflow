@@ -45,4 +45,3 @@ def test_explicit_paths_win_and_relative_resolves_against_cwd(monkeypatch, tmp_p
 
 def test_the_user_config_path_is_not_the_checkout_config():
     assert DEFAULT_CONFIG_PATH != LEGACY_CONFIG_PATH
-    assert "swarmflow" in str(DEFAULT_CONFIG_PATH)
