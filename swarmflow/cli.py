@@ -124,7 +124,7 @@ def cmd_recon(args, config) -> int:
 def cmd_evidence(args, config) -> int:
     from .evidence import write_bundle
     ledger = Ledger(config["paths"]["ledger"])
-    path = write_bundle(str(Path(args.project).resolve()), ledger,
+    path = write_bundle(str(runstate.resolve_project(args.project)), ledger,
                         ignores=config["audit"]["ignore_extra"])
     ledger.close()
     if args.json:
@@ -143,12 +143,16 @@ def cmd_trace(args, config) -> int:
 def cmd_plan_load(args, config) -> int:
     return pipeline.plan_load(args.plan, args.project, config,
                               allow_dirty=args.allow_dirty, kill_stale=args.kill_stale,
-                              json_output=args.json)
+                              json_output=args.json, worktree=args.worktree,
+                              worktree_path=args.worktree_path)
 
 
 def cmd_plan(args, config) -> int:
     """Frontier planning: PRD (+ recon digest) -> validated plan.yaml."""
     from .roles import RoleError, plan_from_prd
+    if getattr(args, "worktree", False) and not getattr(args, "load", False):
+        print("--worktree applies to a loaded run; add --load (or drop --worktree)")
+        return 2
     prd_path = Path(args.prd)
     if not prd_path.exists():
         print(f"PRD not found: {prd_path}")
@@ -185,7 +189,9 @@ def cmd_plan(args, config) -> int:
               f"waves {result['waves']}){' [retried once]' if result['retried'] else ''}")
         print(f"raw model output: {result['artifact']}")
     if args.load:
-        return pipeline.plan_load(str(out), str(project_root), config)
+        return pipeline.plan_load(str(out), str(project_root), config,
+                                  worktree=getattr(args, "worktree", False),
+                                  worktree_path=getattr(args, "worktree_path", None))
     return 0
 
 
@@ -197,7 +203,7 @@ def cmd_verify(args, config) -> int:
         if not task:
             print(f"unknown task: {args.task}")
             return 2
-        project_root = args.project or task["project"]
+        project_root = str(runstate.resolve_project(args.project or task["project"]))
         try:
             result = verify_task(config, project_root, ledger, args.task)
         except RoleError as exc:
@@ -234,7 +240,7 @@ def cmd_retry(args, config) -> int:
             print(f"task {task['id']} already used {task['attempts']} attempts; "
                   "escalate or re-plan instead of retrying")
             return 2
-        project_root = args.project or task["project"]
+        project_root = str(runstate.resolve_project(args.project or task["project"]))
         verdict = latest_verdict(project_root, task["id"])
         findings = []
         if verdict and str(verdict.get("verdict", "")).lower() != "pass":
@@ -267,7 +273,8 @@ def cmd_accept(args, config) -> int:
     from .roles import RoleError, accept_run
     with Ledger(config["paths"]["ledger"]) as ledger:
         try:
-            result = accept_run(config, str(Path(args.project).resolve()), ledger)
+            result = accept_run(config, str(runstate.resolve_project(args.project)),
+                                ledger)
         except RoleError as exc:
             print(f"ACCEPT FAILED: {exc}")
             return exc.code
@@ -315,7 +322,7 @@ def cmd_status(args, config) -> int:
 
 def cmd_freeze(args, config) -> int:
     ledger = Ledger(config["paths"]["ledger"])
-    project_root = str(Path(args.project).resolve())
+    project_root = str(runstate.resolve_project(args.project))
     tasks = [task for task in ledger.list_tasks() if task["project"] == project_root]
     ledger.close()
     if not tasks:
@@ -342,7 +349,7 @@ def cmd_freeze(args, config) -> int:
 
 
 def cmd_audit(args, config) -> int:
-    project_root = str(Path(args.project).resolve())
+    project_root = str(runstate.resolve_project(args.project))
     run_state = runstate.load_run(project_root)
     ignores = list(config["audit"]["ignore_extra"]) \
         + list(run_state.get("audit_ignores") or [])
@@ -397,6 +404,13 @@ def main(argv: list[str] | None = None) -> int:
     plan_load.add_argument("--kill-stale", action="store_true",
                            help="brownfield: terminate pre-existing project listeners")
     plan_load.add_argument("--json", action="store_true")
+    plan_load.add_argument("--worktree", action="store_true",
+                           help="run in an isolated git worktree on the run branch; the "
+                                "project checkout keeps its branch and its uncommitted "
+                                "work")
+    plan_load.add_argument("--worktree-path", default=None,
+                           help="where the run worktree goes "
+                                "(default: <project>/.swarmflow/worktrees/<name>)")
     plan_load.set_defaults(func=cmd_plan_load)
 
     wave = sub.add_parser("wave-run", help="run one wave of queued tasks")
@@ -423,6 +437,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="default: <project>/.swarmflow/plan.yaml")
     plan_p.add_argument("--load", action="store_true",
                         help="plan-load the resulting file immediately")
+    plan_p.add_argument("--worktree", action="store_true",
+                        help="with --load: run in an isolated git worktree on the run "
+                             "branch, leaving the project checkout untouched")
+    plan_p.add_argument("--worktree-path", default=None,
+                        help="with --load: where the run worktree goes")
     plan_p.add_argument("--force", action="store_true", help="overwrite an existing --out")
     plan_p.add_argument("--json", action="store_true")
     plan_p.set_defaults(func=cmd_plan)

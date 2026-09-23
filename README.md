@@ -17,6 +17,7 @@ single source of truth; every claim is verified by artifacts, never by exit code
 - [Case study](docs/CASE_STUDY.md) - first full validation run (TaskDock MVP-1)
 - [Executive summary](docs/EXECUTIVE_SUMMARY.md) - what it does, how local inference is used
 - [Independent review](docs/PROJECT_REVIEW_glm5.3-flash.md) - adversarial audit of an earlier revision
+- [Model evaluation](docs/MODEL_EVALUATION_qwen3.8-flash-next.md) - one local model as frontier and workers: session costs, failure modes, configuration notes
 - [Agent guide](AGENTS.md) - for agents working on this repo
 
 ## Quickstart
@@ -52,6 +53,21 @@ swarmflow recon --project <repo>            # stacks, commands, tests, git state
 swarmflow plan-load --plan plan.yaml        # clean-tree check, run branch, .swarmflow/
 swarmflow wave-run --wave 1                 # sweep + regression gate + discrimination + audit
 swarmflow evidence --project <repo>         # bundle for the verifier/acceptance pass
+```
+
+Working in the checkout the run does not touch: add `--worktree` to `plan-load` (or to
+`plan --load`). The run gets a linked worktree at
+`<project>/.swarmflow/worktrees/<name>` on the run branch, and that checkout becomes the
+run root for workers, gates, and evidence - the project keeps its branch, its index, and
+its uncommitted work, so a run can start while you keep editing (the only thing the
+project gains is the usual `.gitignore` entries and an informational `run.json` mirror).
+Commands that take `--project` accept either path. Each delivered task is committed on
+the run branch after the wave's scope audit, so you can review or drop one task's change
+on its own (`git.commit_tasks: false` turns that off):
+
+```bash
+git -C <repo> log swarmflow/<name> --oneline     # one commit per delivered task
+git -C <repo> worktree remove .swarmflow/worktrees/<name>
 ```
 
 Useful wave flags: `--rebaseline` (re-record the regression baseline when the current

@@ -7,6 +7,25 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- **`plan-load --worktree` (and `plan --load --worktree`)**: a run can execute in a linked
+  git worktree at `<project>/.swarmflow/worktrees/<name>` on its own branch. That checkout
+  becomes the run root for workers, gates, and evidence, while the project keeps its
+  branch, its index, and its uncommitted work - so a run starts without stashing anything.
+  The project store records a pointer, so commands taking `--project` accept either path,
+  and the pinned PRD is copied into the run root so verification and acceptance still see
+  it. Creation refuses (instead of silently operating on the wrong tree) when the project
+  is not the repository toplevel, has no commit, has no repository, or when the target
+  path holds a worktree of another branch. Preflight reports listeners running from the
+  project checkout (never kills them).
+- **One commit per delivered task**: after a wave's scope audit, `wave-run` commits each
+  delivered task on the run branch (`git.commit_tasks`, `git.commit_name`,
+  `git.commit_email`). Commits are reviewable and droppable one task at a time; the
+  committed set is the task's owner files as git sees them (so a task delivered on a retry
+  commits the whole task, not the last attempt), taken with literal pathspecs, with
+  gitignored owner paths skipped and the operator's other staged work untouched. A failed
+  scope audit commits nothing; commit outcomes are printed, recorded as
+  `commit`/`commit-skipped`/`commit-failed` ledger events, and reported in
+  `wave-run --json` under `commits`. A failed commit never fails the wave.
 - **Provider layer**: `providers.<name>` defines a frontier block and a worker model once;
   `role_providers.frontier|worker` selects which one serves each role, overriding the role
   defaults. Swapping models (hosted <-> local, frontier and workers independently) is one
@@ -25,6 +44,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (3.13), and a packaging job builds the wheel, installs it into a clean environment and
   smokes `swarmflow init` + `status --json` outside the source tree.
 - **`docs/EXECUTIVE_SUMMARY.md`** (linked from the README, with the independent review).
+- **`docs/MODEL_EVALUATION_qwen3.8-flash-next.md`** (linked from the README): one local model
+  scored across frontier and worker roles on saved workspaces and server counters — session
+  costs, independent-oracle results, the thinking-off non-convergence finding (thinking off
+  cost 3.4x the tokens of thinking high on the same task and still hit the turn cap), and the
+  attribution lesson that a role pointing at a missing Pi provider falls back silently to the
+  default model.
 - **Plan-shape rule: same-wave tasks must be independent.** `validate_plan` now rejects two
   tasks in one wave that share a `test_command` (the recurring "implement X" + "write X's
   tests" split, which races: the second task's tests fail until the first lands). The

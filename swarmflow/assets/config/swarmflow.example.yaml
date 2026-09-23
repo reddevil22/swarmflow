@@ -144,3 +144,9 @@ verify:
 
 git:
   branch_prefix: "swarmflow/"   # brownfield run branches are <prefix><project_name>
+  # One commit per delivered task, made by wave-run after the wave's scope audit: the
+  # committed set is the task's owner files as git sees them (gitignored ones stay out),
+  # so a gate that fails later never costs the operator a per-task review or rollback.
+  commit_tasks: true
+  commit_name: "swarmflow"      # committer identity for generated commits
+  commit_email: "swarmflow@localhost"

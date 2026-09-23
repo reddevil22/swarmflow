@@ -85,6 +85,29 @@ def run_path(project_root) -> Path:
     return store_dir(project_root) / "run.json"
 
 
+def resolve_project(path) -> Path:
+    """The run root for a project path.
+
+    A worktree-mode run records its run root in the project's own store, so a command
+    given either path lands on the run. The hop is taken only when the run root still
+    exists and names this path as its ``source_project``, so a superseded, stale, or
+    hand-edited pointer cannot misdirect a gate command to another checkout.
+    """
+    root = Path(path).resolve()
+    data = load_run(root)
+    worktree = data.get("worktree") if isinstance(data, dict) else None
+    if not worktree:
+        return root
+    target = Path(worktree)
+    if not target.is_dir():
+        return root
+    target = target.resolve()
+    recorded = load_run(target).get("source_project")
+    if not recorded or Path(recorded).resolve() != root:
+        return root
+    return target
+
+
 def write_mirror(project_root, data: dict) -> None:
     """Write the informational project-side copy. Nothing ever reads it."""
     path = Path(project_root) / ".swarmflow" / "run.json"

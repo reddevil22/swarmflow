@@ -17,6 +17,20 @@ def _config(tmp_path, **extra):
     return path
 
 
+def test_plan_rejects_worktree_without_load(tmp_path, capsys):
+    """--worktree isolates a loaded run; alone it would silently do nothing."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    prd = tmp_path / "PRD.md"
+    prd.write_text("# Requirements\n", encoding="utf-8")
+
+    rc = cli.main(["--config", str(_config(tmp_path)), "plan", "--prd", str(prd),
+                   "--project", str(project), "--worktree"])
+
+    assert rc == 2
+    assert "--load" in capsys.readouterr().out
+
+
 def test_status_json(tmp_path, capsys):
     assert cli.main(["--config", str(_config(tmp_path)), "status", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)

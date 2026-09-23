@@ -7,6 +7,7 @@ none of them read argparse namespaces.
 """
 
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -34,8 +35,14 @@ def recon_regression_command(project_root: str) -> str:
 
 
 def brownfield_preflight(plan: dict, project_root: Path, plan_path: str,
-                         allow_dirty: bool, kill_stale: bool, config) -> int:
-    """Git-required preflight: clean tree, ignore entries, recon, branch, control state."""
+                         allow_dirty: bool, kill_stale: bool, config,
+                         source_root: Path | None = None) -> int:
+    """Git-required preflight: clean tree, ignore entries, recon, branch, control state.
+
+    ``source_root`` is the project an isolated run was branched from: listeners running
+    there are reported (never killed - they are the operator's) because the run's probes
+    share the machine with them.
+    """
     from .recon import (branch_ensure, ensure_gitignore_entries, git_state,
                         recon as run_recon)
     state = git_state(project_root)
@@ -63,6 +70,11 @@ def brownfield_preflight(plan: dict, project_root: Path, plan_path: str,
     detected = recon_regression_command(str(project_root))
     branch = config["git"]["branch_prefix"] + (plan.get("project_name") or "run")
     action = branch_ensure(str(project_root), branch)
+    if action == "failed":
+        print(f"could not check out the run branch {branch}: another worktree may hold it "
+              f"(git worktree list) or local changes block the switch; resolve that and "
+              f"re-run")
+        return 2
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     data = runstate.load_run(str(project_root))
     data.update({"plan_path": str(Path(plan_path).resolve()), "mode": "brownfield",
@@ -101,12 +113,33 @@ def brownfield_preflight(plan: dict, project_root: Path, plan_path: str,
         else:
             print("  stale listeners can serve stale code to probes; use --kill-stale "
                   "or stop them manually")
+    if source_root is not None:
+        running = {record["pid"] for record in stale}
+        checkout = [record for record in
+                    find_stale(str(source_root), process_snapshot(),
+                               config.get("sweep") or {})
+                    if record["pid"] not in running]
+        if checkout:
+            preview = "; ".join(f"pid {record['pid']} {record['name']} "
+                                f"(ports: {format_ports(record['ports'])})"
+                                for record in checkout[:3])
+            print(f"note: {len(checkout)} listener(s) run from the project checkout "
+                  f"({source_root}): {preview}")
+            print("  the run cannot sweep them; probes that reach those ports would see "
+                  "the project's code, not the run's")
     return 0
 
 
 def plan_load(plan_path: str, project: str | None, config, allow_dirty: bool = False,
-              kill_stale: bool = False, json_output: bool = False) -> int:
-    """Validate, scaffold, freeze gate inputs and enqueue a plan."""
+              kill_stale: bool = False, json_output: bool = False, worktree: bool = False,
+              worktree_path: str | None = None) -> int:
+    """Validate, scaffold, freeze gate inputs and enqueue a plan.
+
+    With ``worktree`` the run gets an isolated checkout on its own branch, and that
+    checkout - not the project the operator is working in - becomes the run root for
+    workers, gates, and evidence. The project's checkout keeps its branch, its index, and
+    its uncommitted work, so a run can start while the operator keeps editing.
+    """
     plan = load_plan(plan_path)
     errors = validate_plan(plan)
     if errors:
@@ -118,12 +151,38 @@ def plan_load(plan_path: str, project: str | None, config, allow_dirty: bool = F
     if not raw_root:
         print("no project root given (use --project or project: in the plan)")
         return 2
-    project_root = Path(raw_root).resolve()
+    source_root = Path(raw_root).resolve()
     mode = plan.get("mode", "greenfield")
+    project_root = source_root
+    worktree_info = None
+    if worktree:
+        from .worktree import default_path, ensure
+        name = plan.get("project_name") or "run"
+        branch = config["git"]["branch_prefix"] + name
+        target = Path(worktree_path).resolve() if worktree_path \
+            else default_path(source_root, name)
+        outcome = ensure(source_root, target, branch)
+        if outcome["action"] == "failed":
+            print(f"worktree not created: {outcome['reason']}")
+            return 2
+        project_root = target
+        worktree_info = {"worktree": str(target), "worktree_branch": branch,
+                         "worktree_action": outcome["action"],
+                         "source_project": str(source_root)}
+        # recorded before anything else can fail, so a half-finished plan-load still
+        # leaves a run root the operator can see and re-use
+        worktree_setup(source_root, project_root, worktree_info, plan_path, mode)
+    else:
+        clear_worktree_pointer(source_root)
     if mode == "brownfield":
         rc = brownfield_preflight(plan, project_root, plan_path, allow_dirty,
-                                  kill_stale, config)
+                                  kill_stale, config,
+                                  source_root=source_root if worktree_info else None)
         if rc:
+            if worktree_info:
+                print(f"the worktree and branch were left in place: git -C "
+                      f"\"{source_root}\" worktree remove \"{project_root}\" && git -C "
+                      f"\"{source_root}\" branch -D {worktree_info['worktree_branch']}")
             return rc
     info = scaffold(plan, project_root, mode=mode)
     if mode != "brownfield":
@@ -133,23 +192,134 @@ def plan_load(plan_path: str, project: str | None, config, allow_dirty: bool = F
                      "project": str(project_root.resolve()), "updated_at": now})
         data.setdefault("created_at", now)
         override = config["regression"].get("command") or ""
-        command = override or recon_regression_command(str(project_root))
+        command = override or recon_regression_command(str(project_root)) \
+            or (recon_regression_command(str(source_root)) if worktree_info else "")
         if command:
             data["regression_command"] = command
             data.setdefault("regression_source",
                             "config override" if override else "recon")
         runstate.persist_run(str(project_root), data, mirror=True)
+    if worktree_info and mode == "brownfield":
+        adopt_source_gate_command(project_root, source_root)
     ledger = Ledger(config["paths"]["ledger"])
     counts = enqueue_plan(ledger, plan, project_root, info["spec_paths"])
     ledger.close()
+    if worktree_info:
+        record_run_root(project_root, worktree_info, plan_path, mode)
     if json_output:
-        print(json.dumps({"mode": mode, "project": str(project_root),
-                          "tasks": counts, "git": info["git"],
-                          "spec_paths": len(info["spec_paths"])}))
+        payload = {"mode": mode, "project": str(project_root), "tasks": counts,
+                   "git": info["git"], "spec_paths": len(info["spec_paths"])}
+        if worktree_info:
+            payload["worktree"] = worktree_info
+        print(json.dumps(payload))
     else:
         print(f"[{mode}] scaffolded {project_root} (git: {info['git']}); enqueued "
               f"{counts['inserted']}/{counts['total']} tasks")
+        if worktree_info:
+            print(f"worktree run ({worktree_info['worktree_action']}): the run root is "
+                  f"{project_root} on {worktree_info['worktree_branch']}")
+            print("  the project checkout kept its branch, its index, and its uncommitted "
+                  "work; commands that take --project accept either path")
     return 0
+
+
+def worktree_setup(source_root: Path, project_root: Path, info: dict, plan_path: str,
+                   mode: str) -> None:
+    """The source-side pointer and ignore entries, plus the pinned PRD, for a worktree run.
+
+    The pointer is written at creation time rather than at the end of plan-load: if a
+    later step fails, the worktree is still discoverable from the project path. The run
+    root's own ignore entries are left to the preflight (brownfield) or written here
+    (greenfield), because editing a run root's tracked ``.gitignore`` before preflight's
+    dirty-tree check would make the fresh checkout look dirty to itself.
+    """
+    from .recon import ensure_gitignore_entries
+    if mode != "brownfield":
+        ensure_gitignore_entries(project_root, [".swarmflow/", "logs/"])
+    if _is_nested(project_root, source_root):
+        ensure_gitignore_entries(source_root, [".swarmflow/", "logs/"])
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    plan = str(Path(plan_path).resolve())
+    data = runstate.load_run(str(source_root))
+    data.update(info)
+    data.update({"mode": mode, "plan_path": plan, "project": str(source_root),
+                 "updated_at": now})
+    data.setdefault("created_at", now)
+    runstate.persist_run(str(source_root), data, mirror=True)
+    copy_pinned_prd(source_root, project_root)
+
+
+def record_run_root(project_root: Path, info: dict, plan_path: str, mode: str) -> None:
+    """Point the run root's own store at the project it was branched from.
+
+    It deliberately does not carry a ``worktree`` key: that key lives in the source's
+    store and means "this project's run is elsewhere".
+    """
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    data = runstate.load_run(str(project_root))
+    data.update({key: value for key, value in info.items() if key != "worktree"})
+    data.update({"mode": mode, "plan_path": str(Path(plan_path).resolve()),
+                 "project": str(project_root), "updated_at": now})
+    data.setdefault("created_at", now)
+    runstate.persist_run(str(project_root), data, mirror=True)
+
+
+def clear_worktree_pointer(project_root: Path) -> None:
+    """A run rooted at the project itself supersedes any worktree pointer."""
+    data = runstate.load_run(str(project_root))
+    keys = ("worktree", "worktree_branch", "worktree_action", "source_project")
+    if any(key in data for key in keys):
+        for key in keys:
+            data.pop(key, None)
+        runstate.persist_run(str(project_root), data, mirror=True)
+
+
+def copy_pinned_prd(source_root: Path, project_root: Path) -> bool:
+    """Give the run root the PRD the planner pinned in the project.
+
+    ``.swarmflow/`` is gitignored, so a fresh worktree checkout never carries ``PRD.md``;
+    without this, verification and acceptance would run in a worktree run with no
+    requirements document.
+    """
+    data = runstate.load_run(str(source_root))
+    source = Path(str(data.get("prd_path") or ""))
+    digest = str(data.get("prd_sha256") or "")
+    if not digest or not source.is_file():
+        return False
+    target = Path(project_root) / ".swarmflow"
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target / "PRD.md")
+    run = runstate.load_run(str(project_root))
+    run.update({"prd_path": str(target / "PRD.md"), "prd_sha256": digest})
+    runstate.persist_run(str(project_root), run, mirror=True)
+    return True
+
+
+def adopt_source_gate_command(project_root: Path, source_root: Path) -> None:
+    """Fill an unfrozen gate command from the project checkout's recon.
+
+    A worktree run re-reconnoitres its own checkout, but an operator-supplied
+    ``recon --regression-command`` lives in the project's ``.swarmflow/recon.json``;
+    without this the run would silently skip the regression gate. Read at plan-load,
+    before any worker exists, exactly like the run root's own recon.
+    """
+    data = runstate.load_run(str(project_root))
+    if data.get("regression_command"):
+        return
+    command = recon_regression_command(str(source_root))
+    if not command:
+        return
+    data["regression_command"] = command
+    data["regression_source"] = "recon (project checkout)"
+    runstate.persist_run(str(project_root), data, mirror=True)
+    print(f"gate command taken from the project checkout's recon: {command}")
+
+
+def _is_nested(project_root: Path, source_root: Path) -> bool:
+    try:
+        return project_root.is_relative_to(source_root)
+    except ValueError:                            # pragma: no cover - defensive
+        return False
 
 
 def save_regression_baseline(project_root: str, baseline: dict) -> None:
@@ -383,6 +553,101 @@ def run_audit(project_root: str, ledger, task_id: str, quiet: bool = False,
     return "fail", result
 
 
+def commit_message(task: dict, wave: int, attempt: int, audit: str) -> str:
+    """Subject names the task and its module; the body records where the commit came from."""
+    subject = f"swarmflow {task['id']}: {task.get('module') or 'task'}"[:72]
+    lines = [f"Wave {wave}, attempt {attempt}; scope audit: {audit}."]
+    summary = spec_first_line(task)
+    if summary:
+        lines.append(summary)
+    if task.get("spec_path"):
+        lines.append(f"Spec: {task['spec_path']}")
+    return subject + "\n\n" + "\n".join(lines) + "\n"
+
+
+def spec_first_line(task: dict) -> str:
+    """First meaningful line of the task's spec file, for a commit body."""
+    path = task.get("spec_path")
+    if not path:
+        return ""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        line = " ".join(line.split()).lstrip("#").strip()
+        if line:
+            return line[:120]
+    return ""
+
+
+def safe_event(ledger, task_id: str, kind: str, payload: dict, quiet: bool = False) -> None:
+    """Record a commit event; a ledger hiccup must not fail a wave."""
+    try:
+        ledger.record_event(task_id, kind, json.dumps(payload)[:500])
+    except Exception as exc:
+        if not quiet:
+            print(f"  could not record {kind} for {task_id}: {exc}")
+
+
+def commit_delivered(project_root: str, wave: int, tasks: list, results: list, config: dict,
+                     ledger, audit: str = "ok", quiet: bool = False) -> list:
+    """Commit each delivered task's owned changes: attribution and cheap rollback.
+
+    The committed set comes from git (the task's owner files that differ from HEAD), not
+    from the delivering attempt's diff: a task that needed two attempts must commit the
+    whole task, or "drop this commit to undo it" would be false. Gitignored owner paths
+    are left alone, pathspecs are literal, and anything unexpected is reported, recorded
+    and survived - the delivery itself is already stored by file hash.
+    """
+    from .gitutil import changed_against_head, commit_paths, is_ignored
+    settings = config.get("git") or {}
+    if not settings.get("commit_tasks", True):
+        return []
+    by_id = {task["id"]: task for task in tasks}
+    commits = []
+    for result in results:
+        task_id = result.get("task_id") if isinstance(result, dict) else None
+        task = by_id.get(task_id)
+        if task is None or result.get("outcome") != "delivered":
+            continue
+        try:
+            owned = list(task.get("owner_files") or [])
+            ignored = [rel for rel in owned if is_ignored(project_root, rel)]
+            paths = [rel for rel in changed_against_head(
+                project_root, [rel for rel in owned if rel not in ignored])]
+            row = ledger.get(task_id) or task
+            attempt = max(1, int(row.get("attempts") or 0))
+            if not paths:
+                reason = ("only gitignored owner paths changed (" +
+                          ", ".join(ignored[:3]) + ")") if ignored else "nothing to commit"
+                if not quiet:
+                    print(f"  no commit for {task_id}: {reason}")
+                safe_event(ledger, task_id, "commit-skipped",
+                           {"wave": wave, "reason": reason}, quiet)
+                continue
+            ok, detail = commit_paths(
+                project_root, paths,
+                commit_message(row, wave, attempt, audit),
+                name=str(settings.get("commit_name", "") or ""),
+                email=str(settings.get("commit_email", "") or ""))
+        except Exception as exc:                  # a commit must never break a wave
+            ok, detail, paths = False, f"{type(exc).__name__}: {exc}"[:200], []
+        if not ok:
+            reason = str(detail)[:200]
+            commits.append({"task_id": task_id, "error": reason})
+            safe_event(ledger, task_id, "commit-failed", {"wave": wave, "error": reason},
+                       quiet)
+            print(f"  commit failed for {task_id}: {reason}")
+            continue
+        commits.append({"task_id": task_id, "sha": detail, "files": len(paths)})
+        safe_event(ledger, task_id, "commit",
+                   {"sha": detail, "wave": wave, "files": paths}, quiet)
+        if not quiet:
+            print(f"  committed {task_id} as {detail} ({len(paths)} file(s))")
+    return commits
+
+
 def run_wave(ledger, config, wave: int, concurrency: int | None = None,
              verify: bool = False, skip_regression: bool = False, strict: bool = False,
              rebaseline: bool = False, quiet: bool = False) -> tuple:
@@ -546,6 +811,14 @@ def run_wave(ledger, config, wave: int, concurrency: int | None = None,
                 print(detail)
         except Exception as exc:                  # never break a wave on sealing
             print(f"seal failed, baseline left unsealed: {exc}")
+    if audit_state == "fail":
+        if not quiet and any(result.get("changed") for result in results):
+            print("no task commits: the scope audit failed, so this wave's changes are "
+                  "not cleanly attributable to a task")
+        report["commits"] = []
+    else:
+        report["commits"] = commit_delivered(project_root, wave, tasks, results, config,
+                                             ledger, audit=audit_state, quiet=quiet)
     verify_results = []
     verify_wanted = verify or bool((config.get("verify") or {}).get("enabled", False))
     if verify_wanted:

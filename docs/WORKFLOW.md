@@ -96,6 +96,16 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    nothing reads; a pre-upgrade run is adopted once (structural fields only). Pre-existing
    untracked files are snapshotted (file-level) into the run and exempted from the scope
    audit - only files created after the preflight can violate it.
+   With `--worktree` the preflight runs in a linked worktree
+   (`<project>/.swarmflow/worktrees/<name>`, `--worktree-path` to place it elsewhere) that
+   becomes the run root: the project's branch, index, and working tree are left alone
+   (it gains the usual `.gitignore` entries and the informational `run.json` mirror), the
+   pinned PRD is copied into the run root's `.swarmflow/`, and the project store records
+   the pointer so commands given either path act on the run. A project checkout that is a
+   subdirectory of its repository, a branch held by another worktree, or a missing commit
+   all refuse the run instead of silently operating on the wrong tree. Listeners running
+   from the project checkout are reported (never killed) because the run's probes share
+   the machine with them.
 4. **Waves**: before each wave, freeze only that wave's owner map (per-wave ownership).
    The freeze **carries** the previous baseline's hashes for files the wave does not own,
    so an edit made between waves stays visible; only an owning wave re-reads a file, and
@@ -121,8 +131,16 @@ Same pipeline, stricter envelope. Used when `mode: brownfield` is set in the pla
    test files at `base_sha` in a throwaway git worktree (verdicts to
    `evidence/wave<N>.discrimination.json`; warn by default, `enforce` fails the wave).
    Then the git-based scope audit runs. Untouched deliveries are rejected (`no_changes`).
+   When the audit passes, each delivered task is committed on its own
+   (`git.commit_tasks`, default on): the message names the task and its module, the body
+   carries the wave, the attempt, and the audit state, and the committed set is the task's
+   owner files as git sees them - gitignored owner paths stay out, pathspecs are literal,
+   and the operator's other staged work is never touched. A failed audit commits nothing
+   (the wave's changes are not cleanly attributable); a failed commit is printed, recorded
+   as a `commit-failed` event, and never fails the wave.
    Preflight additionally warns about project-attributed listeners that were already
-   running before the run (`plan-load --kill-stale` removes them).
+   running before the run (`plan-load --kill-stale` removes them), and, for a worktree
+   run, about listeners in the project checkout the run cannot sweep.
 5. **Verify/accept**: `swarmflow evidence --project P` assembles the bundle (recon
    digest, ledger, worker reports from traces, audit, regression, bounded diff of
    tests + manifests) for the verifier/acceptance passes.

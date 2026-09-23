@@ -25,6 +25,44 @@ def test_roundtrip_and_leftover_tmp_is_harmless(tmp_path):
     assert runstate.store_dir(str(project)).joinpath("run.json").exists()
 
 
+def test_resolve_project_follows_a_worktree_pointer(tmp_path):
+    source = tmp_path / "proj"
+    worktree = source / ".swarmflow" / "worktrees" / "demo"
+    worktree.mkdir(parents=True)
+    runstate.save_run(str(source), {"worktree": str(worktree)})
+    runstate.save_run(str(worktree), {"project": str(worktree),
+                                      "source_project": str(source)})
+
+    assert runstate.resolve_project(str(source)) == worktree.resolve()
+    assert runstate.resolve_project(str(worktree)) == worktree.resolve()
+
+    other = tmp_path / "other"
+    other.mkdir()
+    assert runstate.resolve_project(str(other)) == other.resolve()
+
+
+def test_resolve_project_ignores_a_pointer_to_a_missing_worktree(tmp_path):
+    source = tmp_path / "proj"
+    source.mkdir()
+    runstate.save_run(str(source), {"worktree": str(tmp_path / "gone")})
+
+    assert runstate.resolve_project(str(source)) == source.resolve()
+
+
+def test_resolve_project_requires_the_run_root_to_name_its_source(tmp_path):
+    """A stale pointer to some other checkout must not redirect a gate command."""
+    source = tmp_path / "proj"
+    other = tmp_path / "other"
+    source.mkdir()
+    other.mkdir()
+    runstate.save_run(str(source), {"worktree": str(other)})
+
+    assert runstate.resolve_project(str(source)) == source.resolve()
+
+    runstate.save_run(str(other), {"source_project": str(tmp_path / "third")})
+    assert runstate.resolve_project(str(source)) == source.resolve()
+
+
 def test_corrupt_store_reads_are_guarded(tmp_path):
     project = tmp_path / "proj"
     project.mkdir()

@@ -16,7 +16,7 @@ from pathlib import Path
 from .audit import _hash_file
 from .config import build_cli_command, resolve_executable
 from .procs import kill_tree, spawn_flags
-from .prompt import delivery_changed, fix_context, render_brief
+from .prompt import changed_files, fix_context, render_brief
 from .trace import classify, scan_forbidden, scan_server_launches, scan_trace
 
 
@@ -151,8 +151,9 @@ class WorkerRunner:
             outcome = "scope_violation"
         else:
             outcome = classify(scan, missing)
-        if outcome == "delivered" and not delivery_changed(self.project_root,
-                                                           handle.get("before")):
+        changed = changed_files(self.project_root, handle.get("before")) \
+            if outcome == "delivered" else []
+        if outcome == "delivered" and not changed:
             outcome = "no_changes"
         status = "delivered" if outcome == "delivered" else "failed"
         # inline smoke sessions have no task row; do not write ledger state for them
@@ -167,7 +168,7 @@ class WorkerRunner:
                                     "server_launches": launches[:3]}),
             )
         return {"task_id": task["id"], "outcome": outcome, "missing": missing,
-                "scan": scan, "server_launches": launches}
+                "scan": scan, "changed": changed, "server_launches": launches}
 
     def _supervise(self, handles: list, timeout_s: float) -> list:
         """Watch every handle at once; per-handle deadlines, bounded kills."""

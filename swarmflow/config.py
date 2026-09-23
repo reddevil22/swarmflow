@@ -89,6 +89,11 @@ DEFAULTS = {
     },
     "git": {
         "branch_prefix": "swarmflow/",
+        # one commit per delivered task after the wave's scope audit: attribution and a
+        # cheap rollback for the operator, with an explicit committer identity
+        "commit_tasks": True,
+        "commit_name": "swarmflow",
+        "commit_email": "swarmflow@localhost",
     },
     # Named providers (see apply_providers): swap models with one line, e.g.
     #   providers:

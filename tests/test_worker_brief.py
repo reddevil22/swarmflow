@@ -6,7 +6,7 @@ from pathlib import Path
 from swarmflow.audit import _hash_file
 from swarmflow import runstate
 from swarmflow.ledger import Ledger
-from swarmflow.prompt import (delivery_changed, fix_context, latest_verdict,
+from swarmflow.prompt import (changed_files, fix_context, latest_verdict,
                               stack_rules_block)
 from swarmflow.workers import WorkerRunner
 
@@ -78,21 +78,21 @@ def test_stack_rules_block_selection():
     assert "npm" in stack_rules_block([], has_package_json=True)
 
 
-def test_delivery_changed_detects_each_change_kind(tmp_path):
+def test_changed_files_lists_each_change_kind(tmp_path):
     (tmp_path / "a.py").write_text("v1", encoding="utf-8")
     before = {"a.py": _hash_file(tmp_path / "a.py"), "new.py": None}
-    assert delivery_changed(tmp_path, before) is False
+    assert changed_files(tmp_path, before) == []
 
     (tmp_path / "a.py").write_text("v2", encoding="utf-8")
-    assert delivery_changed(tmp_path, before) is True
+    assert changed_files(tmp_path, before) == ["a.py"]
 
     (tmp_path / "a.py").write_text("v1", encoding="utf-8")
     (tmp_path / "new.py").write_text("created", encoding="utf-8")
-    assert delivery_changed(tmp_path, before) is True
+    assert changed_files(tmp_path, before) == ["new.py"]
 
     (tmp_path / "new.py").unlink()
     (tmp_path / "a.py").unlink()
-    assert delivery_changed(tmp_path, before) is True
+    assert changed_files(tmp_path, before) == ["a.py"]
 
 
 def _write_verify(project, task_id, verdict, findings=None, ok=True):

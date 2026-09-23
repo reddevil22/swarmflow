@@ -66,14 +66,15 @@ def stack_rules_block(stacks: list, has_package_json: bool = False) -> str:
     return "\n".join(lines)
 
 
-def delivery_changed(project_root: Path, before: dict) -> bool:
-    """True if any owned file was created, deleted, or modified since the snapshot."""
+def changed_files(project_root, before: dict) -> list:
+    """Owned files created, deleted, or modified since the snapshot, in snapshot order."""
+    changed = []
     for rel, digest in (before or {}).items():
         path = Path(project_root) / rel
         now = _hash_file(path) if path.exists() else None
         if now != digest:
-            return True
-    return False
+            changed.append(rel)
+    return changed
 
 
 FIX_CONTEXT_MAX_FINDINGS = 10

@@ -147,6 +147,25 @@ def test_unlaunchable_worker_fails_the_task_not_the_wave(tmp_path):
     assert json.loads(task["verdict"])["outcome"] == "spawn_failed"
 
 
+def test_delivery_reports_the_files_the_task_changed(tmp_path):
+    """The delivery scan hands the per-task file list to the caller (used for commits)."""
+    body = ("import sys\n"
+            "sys.stdin.read()\n"
+            "open('feature.py', 'w', encoding='utf-8').write('delivered\\n')\n"
+            "print('{\"type\": \"agent_end\"}')\n"
+            "sys.stdout.flush()\n")
+    config = _config(tmp_path, pi_cli=_fake_pi(tmp_path, body), timeout_s=15)
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    ledger = Ledger(str(tmp_path / "l.db"))
+    ledger.add_task("T1", str(project), wave=1, owner_files=["feature.py"])
+    runner = WorkerRunner(config, ledger, str(project))
+    result = runner.run_task("T1")
+    ledger.close()
+    assert result["outcome"] == "delivered"
+    assert result["changed"] == ["feature.py"]
+
+
 def test_broken_pipe_marks_the_task_failed(tmp_path, monkeypatch):
     class ExplodingStdin:
         def write(self, data):

@@ -1,9 +1,11 @@
 """Wave-run integration: regression gating, abort path, mixed-project refusal."""
 
+import hashlib
 import json
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 import yaml
@@ -606,6 +608,431 @@ def _brownfield_repo(tmp_path, files, name="repo"):
     run("add", "-A")
     run("commit", "-qm", "baseline")
     return repo
+
+
+def _git_out(root, *args) -> str:
+    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
+def _delivering_runner(contents):
+    """Runner that writes each queued task's owner files and reports what changed."""
+
+    class DeliveringRunner:
+        def __init__(self, ledger, root):
+            self.ledger = ledger
+            self.root = root
+
+        def run_wave(self, wave, concurrency=None):
+            results = []
+            for task in self.ledger.list_tasks(status="queued", wave=wave):
+                changed = []
+                for rel in task["owner_files"]:
+                    path = self.root / rel
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(contents.get(task["id"], "written\n"), encoding="utf-8")
+                    changed.append(rel)
+                self.ledger.set_status(task["id"], "delivered")
+                results.append({"task_id": task["id"], "outcome": "delivered",
+                                "missing": [], "scan": {"turns": 1, "out_tokens": 10},
+                                "changed": changed, "server_launches": []})
+            return results
+
+    return DeliveringRunner
+
+
+def _brownfield_plan_with(tmp_path, project, tasks, name="plan.yaml",
+                          project_name="demo"):
+    plan = {"project_name": project_name, "project": str(project), "mode": "brownfield",
+            "tasks": tasks}
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(plan), encoding="utf-8")
+    return path
+
+
+def _task(task_id, files, spec="do the thing"):
+    return {"id": task_id, "module": files[0], "owner_files": list(files), "spec": spec,
+            "wave": 1}
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_worktree_plan_load_leaves_the_project_checkout_alone(tmp_path, monkeypatch):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    (repo / "app.py").write_text("x = 1\ndirty = True\n", encoding="utf-8")
+    (repo / "wip.txt").write_text("staged work in progress\n", encoding="utf-8")
+    _git_out(repo, "add", "wip.txt")
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["feature.py"])])
+    branch_before = _git_out(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    head_before = _git_out(repo, "rev-parse", "HEAD")
+    before_status = _git_out(repo, "status", "--porcelain")
+
+    rc = cli.main(["--config", str(config), "plan-load", "--plan", str(plan),
+                   "--worktree"])
+
+    assert rc == 0
+    worktree = repo / ".swarmflow" / "worktrees" / "demo"
+    assert worktree.is_dir()
+    assert _git_out(worktree, "rev-parse", "--abbrev-ref", "HEAD") == "swarmflow/demo"
+    # the project kept its branch, its dirty file, and its staged work
+    assert _git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == branch_before
+    assert _git_out(repo, "rev-parse", "HEAD") == head_before
+    assert (repo / "app.py").read_text(encoding="utf-8") == "x = 1\ndirty = True\n"
+    assert "wip.txt" in _git_out(repo, "diff", "--cached", "--name-only").split()
+    # ...and the run's root is the worktree, recorded on both stores
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    tasks = ledger.list_tasks()
+    ledger.close()
+    assert Path(tasks[0]["project"]).resolve() == worktree.resolve()
+    assert runstate.load_run(str(repo))["worktree"] == str(worktree.resolve())
+    assert runstate.load_run(str(worktree))["source_project"] == str(repo.resolve())
+    assert "worktree" not in runstate.load_run(str(worktree))
+    assert runstate.resolve_project(str(repo)) == worktree.resolve()
+    # the project checkout is untouched: same branch, same dirty file, same staged work
+    assert _git_out(repo, "status", "--porcelain") == before_status
+
+    # the wave runs there, and its commit lands on the run branch, not in the project
+    runner = _delivering_runner({"T1": "feature\n"})
+    monkeypatch.setattr(pipeline, "_runner",
+                        lambda config, ledger, root: runner(ledger, Path(root)))
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+    assert (worktree / "feature.py").read_text(encoding="utf-8") == "feature\n"
+    assert "swarmflow T1" in _git_out(worktree, "log", "--format=%s")
+    assert (repo / "feature.py").exists() is False
+    assert _git_out(repo, "log", "-1", "--format=%s") == "baseline"
+    assert _git_out(repo, "status", "--porcelain") == before_status
+
+    # a command given the project path reads the run's tree
+    assert cli.main(["--config", str(config), "evidence", "--project", str(repo)]) == 0
+    assert (worktree / ".swarmflow" / "evidence" / "bundle.md").exists()
+    assert not (repo / ".swarmflow" / "evidence").exists()
+
+    # a run rooted at the project itself supersedes the pointer to the worktree
+    second = _brownfield_plan_with(tmp_path, repo, [_task("T2", ["other.py"])],
+                                   name="plan2.yaml", project_name="second")
+    assert cli.main(["--config", str(config), "plan-load", "--allow-dirty",
+                     "--plan", str(second)]) == 0
+    assert "worktree" not in runstate.load_run(str(repo))
+    assert runstate.resolve_project(str(repo)) == repo.resolve()
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_worktree_run_gets_the_pinned_prd(tmp_path):
+    """`.swarmflow/` is gitignored, so the run root must be handed the PRD explicitly."""
+    from swarmflow.roles import _prd_section
+
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    prd = tmp_path / "PRD.md"
+    prd.write_text("# Requirements\n\nShip the thing.\n", encoding="utf-8")
+    stored = repo / ".swarmflow" / "PRD.md"
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_text(prd.read_text(encoding="utf-8"), encoding="utf-8")
+    runstate.save_run(str(repo), {"prd_path": str(stored),
+                                  "prd_sha256": hashlib.sha256(
+                                      prd.read_text(encoding="utf-8")
+                                      .encode("utf-8")).hexdigest()})
+    worktree = repo / ".swarmflow" / "worktrees" / "demo"
+    worktree.mkdir(parents=True)
+
+    assert pipeline.copy_pinned_prd(repo, worktree) is True
+
+    section = _prd_section(str(worktree))
+    assert section is not None and section[0] == "PRD (frozen input)"
+    assert "Ship the thing." in section[1]
+    assert runstate.load_run(str(worktree))["prd_sha256"]
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_worktree_preflight_reports_project_checkout_listeners(tmp_path, capsys):
+    """A server the operator runs from the project checkout is reported, never killed."""
+    import socket
+
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    worktree = repo / ".swarmflow" / "worktrees" / "demo"
+    worktree.mkdir(parents=True)
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    finally:
+        sock.close()
+    starter = ("import subprocess, sys\n"
+               f"popen = subprocess.Popen([sys.executable, '-m', 'http.server', "
+               f"'{port}', '--bind', '127.0.0.1'], stdout=subprocess.DEVNULL, "
+               f"stderr=subprocess.DEVNULL)\n")
+    subprocess.run([sys.executable, "-c", starter], cwd=repo, check=True)
+    pid = None
+    for _ in range(25):
+        time.sleep(0.2)
+        for candidate, entry in procs.snapshot().items():
+            if "http.server" in entry["cmdline"] and str(port) in entry["cmdline"]:
+                pid = candidate
+                break
+        if pid:
+            break
+    assert pid, "the checkout listener was not started"
+    try:
+        plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
+                "tasks": [_task("T1", ["feature.py"])]}
+        plan_path = tmp_path / "plan.yaml"
+        plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
+        from swarmflow.config import load_config
+        config = load_config(str(_config(tmp_path)))
+        assert pipeline.brownfield_preflight(plan, worktree, str(plan_path), False, False,
+                                             config, source_root=repo) == 0
+        out = capsys.readouterr().out
+        assert "run from the project checkout" in out
+        assert str(port) in out
+        assert procs.is_alive(pid)
+    finally:
+        if pid and procs.is_alive(pid):
+            procs.kill_tree(pid, pid)
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_wave_run_commits_each_delivered_task(tmp_path, monkeypatch):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["a.py"], "add a"),
+                                                  _task("T2", ["b.py"], "add b")])
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+    # the operator keeps working while the wave runs: staged work must stay untouchable
+    (repo / "wip.txt").write_text("operator work\n", encoding="utf-8")
+    _git_out(repo, "add", "wip.txt")
+    runner = _delivering_runner({"T1": "a = 1\n", "T2": "b = 2\n"})
+    monkeypatch.setattr(pipeline, "_runner",
+                        lambda config, ledger, root: runner(ledger, Path(root)))
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+
+    subjects = _git_out(repo, "log", "--format=%s").splitlines()
+    assert subjects[0].startswith("swarmflow T2") and subjects[1].startswith("swarmflow T1")
+    assert subjects[2] == "baseline"
+    assert _git_out(repo, "show", "--name-only", "--format=", "HEAD") == "b.py"
+    assert _git_out(repo, "show", "--name-only", "--format=", "HEAD~1") == "a.py"
+    # both commits are in the tree, clean
+    assert (repo / "a.py").exists() and (repo / "b.py").exists()
+    assert "a.py" not in _git_out(repo, "status", "--porcelain")
+    # the operator's staged file is still staged and was never committed
+    assert "wip.txt" in _git_out(repo, "diff", "--cached", "--name-only").split()
+    assert "wip.txt" not in _git_out(repo, "log", "--format=", "--name-only").split()
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    commits = [event for event in ledger.events("T1", limit=20) if event["kind"] == "commit"]
+    ledger.close()
+    assert len(commits) == 1
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_worktree_plan_load_starts_on_a_repo_that_ignores_nothing(tmp_path):
+    """Adding ignore entries must not make the fresh worktree look dirty to itself."""
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    (repo / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+    _git_out(repo, "add", ".gitignore")
+    _git_out(repo, "commit", "-qm", "own gitignore")
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["feature.py"])])
+
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan),
+                     "--worktree"]) == 0
+
+    worktree = repo / ".swarmflow" / "worktrees" / "demo"
+    assert (worktree / ".swarmflow").exists()
+    ignored = (worktree / ".gitignore").read_text(encoding="utf-8")
+    assert ".swarmflow/" in ignored and "logs/" in ignored
+    # the appended entries are the run root's only modification, and its own artifacts
+    # (.swarmflow/, logs/) never show up as untracked
+    assert _git_out(worktree, "status", "--porcelain").splitlines() == ["M .gitignore"]
+    # only the operator's .gitignore changed in the project checkout
+    changed = set(_git_out(repo, "status", "--porcelain").splitlines())
+    assert changed == {"M .gitignore"}
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_plan_load_refuses_a_branch_another_worktree_holds(tmp_path):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    holder = tmp_path / "holder"
+    _git_out(repo, "worktree", "add", "--quiet", "-b", "swarmflow/demo", str(holder))
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["a.py"])])
+
+    rc = cli.main(["--config", str(config), "plan-load", "--plan", str(plan)])
+
+    assert rc == 2
+    assert _git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") != "swarmflow/demo"
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_worktree_gate_command_falls_back_to_the_project_checkout_recon(tmp_path):
+    """A `recon --regression-command` run against the project must still gate the run."""
+    from swarmflow.recon import recon as run_recon
+
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    run_recon(str(repo), regression_command="custom-gate --run")
+    worktree = repo / ".swarmflow" / "worktrees" / "demo"
+    worktree.mkdir(parents=True)
+
+    pipeline.adopt_source_gate_command(worktree, repo)
+
+    state = runstate.load_run(str(worktree))
+    assert state["regression_command"] == "custom-gate --run"
+    assert state["regression_source"] == "recon (project checkout)"
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_commit_covers_the_whole_task_not_one_attempt(tmp_path, monkeypatch):
+    """A retried task's earlier attempt must be in the commit, not left dirty."""
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n", "a.py": "attempt one\n"})
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["a.py", "b.py"])])
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+    # a.py differs from HEAD as an earlier, non-delivering attempt would have left it
+    (repo / "a.py").write_text("attempt one, edited\n", encoding="utf-8")
+    runner = _delivering_runner({"T1": "b = 2\n"})
+    monkeypatch.setattr(pipeline, "_runner",
+                        lambda config, ledger, root: runner(ledger, Path(root)))
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+
+    committed = _git_out(repo, "show", "--name-only", "--format=", "HEAD").split()
+    assert sorted(committed) == ["a.py", "b.py"]
+    assert _git_out(repo, "status", "--porcelain") == ""
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_commit_skips_gitignored_owner_paths(tmp_path, monkeypatch, capsys):
+    """An ignored owner path cannot be committed; the rest of the wave still lands."""
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["logs/run.log"])])
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+
+    class LoggingRunner:
+        def __init__(self, ledger, root):
+            self.ledger = ledger
+            self.root = root
+
+        def run_wave(self, wave, concurrency=None):
+            results = []
+            path = self.root / "logs" / "run.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("noise\n", encoding="utf-8")
+            for task in self.ledger.list_tasks(status="queued", wave=wave):
+                self.ledger.set_status(task["id"], "delivered")
+                results.append({"task_id": task["id"], "outcome": "delivered",
+                                "missing": [], "scan": {"turns": 1, "out_tokens": 10},
+                                "changed": ["logs/run.log"], "server_launches": []})
+            return results
+
+    monkeypatch.setattr(pipeline, "_runner",
+                        lambda config, ledger, root: LoggingRunner(ledger, Path(root)))
+    rc = cli.main(["--config", str(config), "wave-run", "--wave", "1"])
+    out = capsys.readouterr().out
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    kinds = [event["kind"] for event in ledger.events("T1", limit=20)]
+    ledger.close()
+
+    assert rc in (0, 1)                       # the audit decides; the commit does not
+    assert "only gitignored owner paths changed" in out
+    assert "commit-skipped" in kinds
+    assert _git_out(repo, "log", "--format=%s").splitlines() == ["baseline"]
+    assert _git_out(repo, "diff", "--cached", "--name-only") == ""
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_commit_message_names_the_task_module_and_attempt(tmp_path, monkeypatch):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["a.py"])])
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+    runner = _delivering_runner({"T1": "a = 1\n"})
+    monkeypatch.setattr(pipeline, "_runner",
+                        lambda config, ledger, root: runner(ledger, Path(root)))
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+
+    body = _git_out(repo, "log", "-1", "--format=%B")
+    assert body.splitlines()[0] == "swarmflow T1: a.py"
+    assert "attempt 1" in body
+    assert "scope audit: ok" in body
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_commit_failure_is_recorded_and_does_not_fail_the_wave(tmp_path, monkeypatch,
+                                                               capsys):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["a.py"])])
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+    runner = _delivering_runner({"T1": "a = 1\n"})
+    monkeypatch.setattr(pipeline, "_runner",
+                        lambda config, ledger, root: runner(ledger, Path(root)))
+
+    rc = cli.main(["--config", str(config), "wave-run", "--wave", "1"])
+    out = capsys.readouterr().out
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    kinds = [event["kind"] for event in ledger.events("T1", limit=20)]
+    ledger.close()
+
+    assert rc == 0, out
+    assert "commit failed for T1" in out
+    assert "commit-failed" in kinds
+    assert _git_out(repo, "log", "--format=%s").splitlines() == ["baseline"]
+    assert _git_out(repo, "diff", "--cached", "--name-only") == ""
+    assert (repo / "a.py").exists()             # the work is still in the tree
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_wave_run_commits_can_be_turned_off_in_config(tmp_path, monkeypatch):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    config = _config(tmp_path)
+    data = yaml.safe_load(config.read_text(encoding="utf-8"))
+    data["git"] = {"commit_tasks": False}
+    config.write_text(yaml.safe_dump(data), encoding="utf-8")
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["a.py"])])
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+    runner = _delivering_runner({"T1": "a = 1\n"})
+    monkeypatch.setattr(pipeline, "_runner",
+                        lambda config, ledger, root: runner(ledger, Path(root)))
+
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 0
+
+    assert _git_out(repo, "log", "--format=%s").splitlines() == ["baseline"]
+    assert "a.py" in _git_out(repo, "status", "--porcelain")
+
+
+@pytest.mark.skipif(not GIT, reason="git not available")
+def test_failed_scope_audit_commits_nothing(tmp_path, monkeypatch, capsys):
+    repo = _brownfield_repo(tmp_path, {"app.py": "x = 1\n"})
+    config = _config(tmp_path)
+    plan = _brownfield_plan_with(tmp_path, repo, [_task("T1", ["a.py"])])
+    assert cli.main(["--config", str(config), "plan-load", "--plan", str(plan)]) == 0
+
+    class StrayingRunner:
+        def __init__(self, ledger, root):
+            self.ledger = ledger
+            self.root = root
+
+        def run_wave(self, wave, concurrency=None):
+            results = []
+            (self.root / "stray.txt").write_text("unowned\n", encoding="utf-8")
+            for task in self.ledger.list_tasks(status="queued", wave=wave):
+                path = self.root / task["owner_files"][0]
+                path.write_text("a = 1\n", encoding="utf-8")
+                self.ledger.set_status(task["id"], "delivered")
+                results.append({"task_id": task["id"], "outcome": "delivered",
+                                "missing": [], "scan": {"turns": 1, "out_tokens": 10},
+                                "changed": list(task["owner_files"]),
+                                "server_launches": []})
+            return results
+
+    monkeypatch.setattr(pipeline, "_runner",
+                        lambda config, ledger, root: StrayingRunner(ledger, Path(root)))
+    assert cli.main(["--config", str(config), "wave-run", "--wave", "1"]) == 1
+    out = capsys.readouterr().out
+    assert "not cleanly attributable" in out
+    assert _git_out(repo, "log", "--format=%s").splitlines() == ["baseline"]
 
 
 def _brownfield_plan(tmp_path, repo, name="plan.yaml"):
