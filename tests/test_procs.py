@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 
+import psutil
 import pytest
 
 from swarmflow import procs
@@ -14,6 +15,16 @@ def _spawn_sleeper():
     return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
+
+
+def _wait_until(predicate, timeout: float = 10.0) -> bool:
+    """Bounded wait: returns as soon as the predicate holds (no fixed sleeps)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.1)
+    return False
 
 
 def test_snapshot_reports_spawned_process():
@@ -36,15 +47,16 @@ def test_kill_tree_kills_child_and_grandchild():
               "time.sleep(60)\n")
     proc = subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
     try:
-        time.sleep(2)
-        data = procs.snapshot()
-        grandchildren = [pid for pid, entry in data.items()
-                         if entry["ppid"] == proc.pid and pid != proc.pid]
-        assert grandchildren, "grandchild sleeper was not started"
+        def grandchildren():
+            return [pid for pid, entry in procs.snapshot().items()
+                    if entry["ppid"] == proc.pid and pid != proc.pid]
+
+        assert _wait_until(lambda: bool(grandchildren())), \
+            "grandchild sleeper was not started"
+        victims = grandchildren()
         assert procs.kill_tree(proc.pid, proc.pid) is True
-        time.sleep(1)
-        assert not procs.is_alive(proc.pid)
-        assert all(not procs.is_alive(pid) for pid in grandchildren)
+        assert _wait_until(lambda: not procs.is_alive(proc.pid))
+        assert all(not procs.is_alive(pid) for pid in victims)
         assert procs.is_alive(os.getpid())
     finally:
         proc.kill()
@@ -99,21 +111,58 @@ def test_listening_ports_maps_pid():
     except OSError:
         pytest.skip("could not start a local http server")
     try:
-        found = False
-        for _ in range(25):
-            time.sleep(0.2)
+        def attributed():
             owners = [pid for pid, ports in procs.listening_ports().items()
                       if port in ports]
             if not owners:
-                continue
+                return False
             # a venv's python.exe (or py.exe) is a launcher: the socket belongs to its
             # child, so accept any owner that descends from the spawned process
             snapshot = procs.snapshot()
-            if any(pid == proc.pid or proc.pid in _ancestors_in(snapshot, pid)
-                   for pid in owners):
-                found = True
-                break
-        assert found, f"port {port} was not attributed to the spawned server"
+            return any(pid == proc.pid or proc.pid in _ancestors_in(snapshot, pid)
+                       for pid in owners)
+
+        assert _wait_until(attributed), \
+            f"port {port} was not attributed to the spawned server"
     finally:
         proc.kill()
         proc.wait()
+
+
+def test_is_alive_treats_a_zombie_as_terminated():
+    import signal
+
+    if os.name == "nt":
+        pytest.skip("zombies are POSIX-only")
+    proc = _spawn_sleeper()
+    try:
+        os.kill(proc.pid, signal.SIGKILL)             # never waited: it stays a zombie
+        assert _wait_until(lambda: psutil.Process(proc.pid).status()
+                           == psutil.STATUS_ZOMBIE), "child never became a zombie"
+        assert procs.is_alive(proc.pid) is False
+    finally:
+        proc.wait()
+
+
+def test_is_alive_assumes_alive_when_inspection_is_denied(monkeypatch):
+    def denied(pid):
+        raise psutil.AccessDenied(pid)
+
+    monkeypatch.setattr(procs.psutil, "Process", denied)
+    assert procs.is_alive(os.getpid()) is True
+
+
+def test_is_alive_reports_a_vanished_process(monkeypatch):
+    def gone(pid):
+        raise psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(procs.psutil, "Process", gone)
+    assert procs.is_alive(os.getpid()) is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="os.kill(pid, 0) terminates on Windows")
+def test_is_alive_falls_back_to_os_kill_without_psutil(monkeypatch):
+    """The psutil-less fallback: os.kill(pid, 0) is an existence check on POSIX only."""
+    monkeypatch.setattr(procs, "psutil", None)
+    assert procs.is_alive(os.getpid()) is True
+    assert procs.is_alive(999999999) is False

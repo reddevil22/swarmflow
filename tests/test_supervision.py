@@ -63,7 +63,7 @@ def _verdict(ledger, task_id):
 
 
 def test_supervise_kills_every_handle_on_its_own_deadline(tmp_path):
-    config = _config(tmp_path, pi_cli=_fake_pi(tmp_path, BODY_SLEEP), timeout_s=5)
+    config = _config(tmp_path, pi_cli=_fake_pi(tmp_path, BODY_SLEEP), timeout_s=4)
     runner, ledger = _runner(tmp_path, config, ["T1", "T2"])
     started = time.monotonic()
     results = runner.run_wave(1, concurrency=2)
@@ -72,9 +72,55 @@ def test_supervise_kills_every_handle_on_its_own_deadline(tmp_path):
     ledger.close()
 
     assert len(results) == 2
-    # sequential supervision would take 2 x timeout (10s); the bound leaves CI slack
-    assert elapsed < 9.0, f"handles were supervised sequentially ({elapsed:.1f}s)"
+    # sequential supervision would take 2 x timeout (8s); the bound leaves CI slack
+    assert elapsed < 7.0, f"handles were supervised sequentially ({elapsed:.1f}s)"
     assert [verdict["killed_for"] for verdict in verdicts] == ["timeout", "timeout"]
+
+
+def test_expired_handles_are_finalized_in_one_pass(tmp_path, monkeypatch):
+    """Both handles pass their deadline in the same sweep, so both are finalized in it.
+    A supervisor that finalized one handle per pass would either sleep while the other
+    was still due (sentinel below) or never finalize it at all (KeyError on the way
+    out): either way this test fails."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    trace = tmp_path / "t.jsonl"
+    trace.write_text('{"type": "agent_end"}\n', encoding="utf-8")
+    config = _config(tmp_path, timeout_s=1, poll_s=30)
+    runner, ledger = _runner(tmp_path, config, ["T1", "T2"])
+
+    class LiveProc:
+        pid = 999999
+
+        def poll(self):
+            return None                    # still running: the deadline decides
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    class Sink:
+        def close(self):
+            pass
+
+    def sentinel(seconds):
+        raise AssertionError(f"the supervisor slept between handles ({seconds}s)")
+
+    monkeypatch.setattr("swarmflow.workers.kill_tree", lambda pid, pgid=None: True)
+    monkeypatch.setattr("swarmflow.workers.time.sleep", sentinel)
+    handles = [{"proc": LiveProc(), "out": Sink(), "trace": str(trace),
+                "task": ledger.get(task_id), "thinking": "high", "before": {},
+                "pgid": None, "started": time.monotonic() - 10}
+               for task_id in ("T1", "T2")]
+
+    results = runner._supervise(handles, timeout_s=1)
+
+    assert [result["task_id"] for result in results] == ["T1", "T2"]
+    assert [_verdict(ledger, task_id)["killed_for"] for task_id in ("T1", "T2")] == \
+        ["timeout", "timeout"]
+    ledger.close()
 
 
 def test_turn_cap_kills_the_session(tmp_path):

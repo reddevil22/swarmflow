@@ -278,17 +278,17 @@ def test_plan_load_warns_about_stale_listener_and_can_kill_it(tmp_path, capsys):
                "'--bind', '127.0.0.1'], "
                f"cwd=r'{repo}', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n")
     subprocess.run([sys.executable, "-c", starter], check=True)
-    server_pid = None
-    for _ in range(25):
-        time.sleep(0.2)
+
+    def listener_pid():
         for pid, entry in procs.snapshot().items():
             if "http.server" in entry["cmdline"] and str(port) in entry["cmdline"] \
                     and entry["name"].lower().startswith("python"):
-                server_pid = pid
-                break
-        if server_pid:
-            break
-    assert server_pid, "stale listener was not started"
+                return pid
+        return None
+
+    assert _wait_until(lambda: listener_pid() is not None), \
+        "stale listener was not started"
+    server_pid = listener_pid()
     config = _config(tmp_path)
     try:
         plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
@@ -314,14 +314,19 @@ def test_plan_load_warns_about_stale_listener_and_can_kill_it(tmp_path, capsys):
             procs.kill_tree(server_pid, server_pid)
 
 
-def _wait_dead(pid, timeout: float = 8.0) -> bool:
-    """Bounded wait for a process to disappear (kills land asynchronously)."""
+def _wait_until(predicate, timeout: float = 10.0) -> bool:
+    """Bounded wait: returns as soon as the predicate holds (no fixed sleeps)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not procs.is_alive(pid):
+        if predicate():
             return True
-        time.sleep(0.2)
+        time.sleep(0.1)
     return False
+
+
+def _wait_dead(pid, timeout: float = 8.0) -> bool:
+    """Bounded wait for a process to disappear (kills land asynchronously)."""
+    return _wait_until(lambda: not procs.is_alive(pid), timeout)
 
 
 @pytest.mark.skipif(not GIT, reason="git not available")
@@ -361,13 +366,15 @@ def test_brownfield_wave_run_sweeps_leaked_processes(tmp_path, monkeypatch):
                    f"subprocess.Popen([sys.executable, r'{script}'], "
                    "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n")
         subprocess.run([sys.executable, "-c", starter], check=True, cwd=repo)
-        for _ in range(25):
-            time.sleep(0.2)
-            hit = [pid for pid, entry in procs.snapshot().items()
-                   if str(script) in entry["cmdline"] and pid not in leaked]
-            if hit:
-                leaked.append(hit[0])
-                return
+
+        def new_leak():
+            return [pid for pid, entry in procs.snapshot().items()
+                    if str(script) in entry["cmdline"] and pid not in leaked]
+
+        _wait_until(lambda: bool(new_leak()))
+        hit = new_leak()
+        if hit:
+            leaked.append(hit[0])
 
     class LeakyRunner:
         def __init__(self, ledger):
@@ -763,16 +770,16 @@ def test_worktree_preflight_reports_project_checkout_listeners(tmp_path, capsys)
                f"'{port}', '--bind', '127.0.0.1'], stdout=subprocess.DEVNULL, "
                f"stderr=subprocess.DEVNULL)\n")
     subprocess.run([sys.executable, "-c", starter], cwd=repo, check=True)
-    pid = None
-    for _ in range(25):
-        time.sleep(0.2)
+
+    def listener_pid():
         for candidate, entry in procs.snapshot().items():
             if "http.server" in entry["cmdline"] and str(port) in entry["cmdline"]:
-                pid = candidate
-                break
-        if pid:
-            break
-    assert pid, "the checkout listener was not started"
+                return candidate
+        return None
+
+    assert _wait_until(lambda: listener_pid() is not None), \
+        "the checkout listener was not started"
+    pid = listener_pid()
     try:
         plan = {"project_name": "demo", "project": str(repo), "mode": "brownfield",
                 "tasks": [_task("T1", ["feature.py"])]}

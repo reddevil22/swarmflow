@@ -178,7 +178,7 @@ def test_inline_sessions_do_not_touch_the_ledger(tmp_path, monkeypatch):
     runner = WorkerRunner(config, ledger, str(project))
 
     class Proc:
-        pid = 1
+        pid = 999999
 
         def poll(self):
             return 0
@@ -213,7 +213,7 @@ def test_dispatch_injects_findings_from_attempt_two(tmp_path, monkeypatch):
     captured = {}
 
     class Proc:
-        pid = 1
+        pid = 999999
 
         def poll(self):
             return 0

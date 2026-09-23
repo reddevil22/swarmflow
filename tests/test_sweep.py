@@ -14,6 +14,16 @@ def _entry(ppid, name, cmdline, cwd="", create_time=0.0):
             "create_time": create_time}
 
 
+def _wait_until(predicate, timeout: float = 10.0) -> bool:
+    """Bounded wait: returns as soon as the predicate holds (no fixed sleeps)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def test_find_orphans_splits_born_and_preexisting(tmp_path):
     root = str(tmp_path)
     before = {111: _entry(1, "node", f"node {root}/old.js", create_time=1.0)}
@@ -101,19 +111,21 @@ def test_run_sweep_kill_terminates_a_real_orphan(tmp_path):
                f"subprocess.Popen([sys.executable, r'{script}'], stdout=subprocess.DEVNULL, "
                "stderr=subprocess.DEVNULL)\n")
     subprocess.run([sys.executable, "-c", starter], check=True)
-    time.sleep(2)
-    data = procs.snapshot()
-    target = [pid for pid, entry in data.items() if str(script) in entry["cmdline"]]
-    assert target, "orphan was not started"
-    pid = target[0]
+
+    def orphan_pid():
+        found = [pid for pid, entry in procs.snapshot().items()
+                 if str(script) in entry["cmdline"]]
+        return found[0] if found else None
+
+    assert _wait_until(lambda: orphan_pid() is not None), "orphan was not started"
+    pid = orphan_pid()
     try:
         after = procs.snapshot()
         result = run_sweep(str(root), 1, {}, after, wave_start=0.0,
                            config={"sweep": {"mode": "kill",
                                              "kill_requires_port": False}})
         assert pid in result["killed"]
-        time.sleep(1)
-        assert not procs.is_alive(pid)
+        assert _wait_until(lambda: not procs.is_alive(pid))
     finally:
         if procs.is_alive(pid):
             procs.kill_tree(pid, pid)
